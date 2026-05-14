@@ -33,7 +33,9 @@ final class TelegramNotifier implements Notifier
 
         $statusCode = $response->getStatusCode();
         if ($statusCode >= 300) {
-            throw new \RuntimeException(sprintf('Telegram API returned HTTP %d', $statusCode));
+            throw new \RuntimeException(
+                sprintf('Telegram API returned HTTP %d: %s', $statusCode, $response->getContent(false)),
+            );
         }
     }
 }

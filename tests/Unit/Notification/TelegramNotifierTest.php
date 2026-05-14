@@ -8,6 +8,7 @@ use App\Notification\TelegramNotifier;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
+use Symfony\Contracts\HttpClient\Exception\TransportExceptionInterface;
 
 final class TelegramNotifierTest extends TestCase
 {
@@ -28,6 +29,7 @@ final class TelegramNotifierTest extends TestCase
         self::assertStringContainsString('/botsecret-token/sendMessage', $captured['url']);
         self::assertStringContainsString('123456', (string) $captured['body']);
         self::assertStringContainsString('hello+world', (string) $captured['body']);
+        self::assertStringContainsString('parse_mode=HTML', (string) $captured['body']);
     }
 
     public function testSendThrowsOnApiError(): void
@@ -36,6 +38,15 @@ final class TelegramNotifierTest extends TestCase
         $notifier = new TelegramNotifier($http, 'secret-token', '123456');
 
         $this->expectException(\RuntimeException::class);
+        $notifier->send('hello');
+    }
+
+    public function testSendThrowsOnTransportFailure(): void
+    {
+        $http = new MockHttpClient(new MockResponse('', ['error' => 'Connection refused']));
+        $notifier = new TelegramNotifier($http, 'secret-token', '123456');
+
+        $this->expectException(TransportExceptionInterface::class);
         $notifier->send('hello');
     }
 }
