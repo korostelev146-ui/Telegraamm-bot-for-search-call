@@ -39,6 +39,27 @@ final class TieredAdvertiserClassifier implements AdvertiserClassifier
 
     private const HIGH_SELLER_COUNT_THRESHOLD = 2;
 
+    /**
+     * Czech diacritics → ASCII base letters (locale-independent transliteration).
+     */
+    private const ACCENT_MAP = [
+        'á' => 'a',
+        'č' => 'c',
+        'ď' => 'd',
+        'é' => 'e',
+        'ě' => 'e',
+        'í' => 'i',
+        'ň' => 'n',
+        'ó' => 'o',
+        'ř' => 'r',
+        'š' => 's',
+        'ť' => 't',
+        'ú' => 'u',
+        'ů' => 'u',
+        'ý' => 'y',
+        'ž' => 'z',
+    ];
+
     public function __construct(
         private readonly ContactRegistry $registry,
     ) {
@@ -145,9 +166,8 @@ final class TieredAdvertiserClassifier implements AdvertiserClassifier
 
     private function normalise(string $text): string
     {
-        $lower = mb_strtolower($text);
-        $stripped = @iconv('UTF-8', 'ASCII//TRANSLIT', $lower);
-
-        return $stripped === false ? $lower : $stripped;
+        // Deterministic, locale-independent: lowercase, then map Czech diacritics
+        // to ASCII so the ASCII phrase constants match real accented listing text.
+        return strtr(mb_strtolower($text), self::ACCENT_MAP);
     }
 }

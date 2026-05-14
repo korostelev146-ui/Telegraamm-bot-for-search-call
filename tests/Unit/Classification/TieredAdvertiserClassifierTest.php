@@ -80,7 +80,8 @@ final class TieredAdvertiserClassifierTest extends TestCase
 
     public function testTier1OwnerSelfIdPhraseIsOwner(): void
     {
-        $listing = $this->listing('Prodej primo od majitele, RK nevolat', null);
+        // Real accented Czech — normalise() must strip diacritics for the match to land.
+        $listing = $this->listing('Prodej přímo od majitele, RK nevolat', null);
 
         $verdict = $this->classifier->classify($listing, [$this->phone('+420777123456')]);
 
@@ -123,7 +124,7 @@ final class TieredAdvertiserClassifierTest extends TestCase
 
     public function testTier2RealtorLanguageIsRealtor(): void
     {
-        $listing = $this->listing('Nase realitni kancelar nabizi, provize v cene', null);
+        $listing = $this->listing('Naše realitní kancelář nabízí, provize v ceně', null);
 
         $verdict = $this->classifier->classify($listing, [$this->phone('+420777123456')]);
 
@@ -142,11 +143,37 @@ final class TieredAdvertiserClassifierTest extends TestCase
     public function testOwnerSelfIdBeatsRealtorLanguage(): void
     {
         // Tier 1 runs before Tier 2: owner self-ID wins even if realtor words also appear.
-        $listing = $this->listing('Provize zadna, prodej primo od majitele', null);
+        $listing = $this->listing('Provize žádná, prodej přímo od majitele', null);
 
         $verdict = $this->classifier->classify($listing, [$this->phone('+420777123456')]);
 
         self::assertSame(Classification::OWNER, $verdict->classification);
+    }
+
+    public function testTier0BeatsTier1WhenSellerIsAgencyButTextLooksLikeOwner(): void
+    {
+        // Tier 0 runs before Tier 1: an agency seller stays REALTOR even with owner self-ID text.
+        $listing = $this->listing(
+            'Přímo od majitele, RK nevolat',
+            new SellerMeta(hasPremise: true, totalListingCount: 1, name: 'RK'),
+        );
+
+        $verdict = $this->classifier->classify($listing, [$this->phone('+420777123456')]);
+
+        self::assertSame(Classification::REALTOR, $verdict->classification);
+    }
+
+    public function testSellerWithTwoListingsFallsThroughToUnknown(): void
+    {
+        // Tier 0 needs > 2, Tier 1 needs === 1 — exactly 2 falls through (intentional).
+        $listing = $this->listing(
+            'Hezky slunny byt',
+            new SellerMeta(hasPremise: false, totalListingCount: 2, name: 'Jan'),
+        );
+
+        $verdict = $this->classifier->classify($listing, [$this->phone('+420777123456')]);
+
+        self::assertSame(Classification::UNKNOWN, $verdict->classification);
     }
 
     public function testVerdictCarriesReasons(): void
