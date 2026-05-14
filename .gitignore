@@ -1,0 +1,13 @@
+# Symfony / PHP
+/vendor/
+/var/
+/.env.local
+/.env.local.php
+/.env.*.local
+/public/bundles/
+/composer.phar
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
