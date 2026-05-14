@@ -44,12 +44,18 @@ final class MonitorRunnerTest extends TestCase
     /**
      * @param list<Listing> $listings
      */
-    private function source(array $listings, bool $throwOnFetch = false): ListingSource
-    {
-        return new class ($listings, $throwOnFetch) implements ListingSource {
+    private function source(
+        array $listings,
+        bool $throwOnFetch = false,
+        bool $throwOnHydrate = false,
+    ): ListingSource {
+        return new class ($listings, $throwOnFetch, $throwOnHydrate) implements ListingSource {
             /** @param list<Listing> $listings */
-            public function __construct(private array $listings, private bool $throwOnFetch)
-            {
+            public function __construct(
+                private array $listings,
+                private bool $throwOnFetch,
+                private bool $throwOnHydrate,
+            ) {
             }
 
             public function fetchRecentListings(): array
@@ -63,15 +69,30 @@ final class MonitorRunnerTest extends TestCase
 
             public function hydrate(Listing $listing): Listing
             {
+                if ($this->throwOnHydrate) {
+                    throw new \RuntimeException('hydrate failed');
+                }
+
                 return $listing;
             }
         };
     }
 
-    private function runner(ListingSource ...$sources): MonitorRunner
+    private function makeDatabase(): Database
     {
         $database = new Database(':memory:');
         $database->migrate();
+
+        return $database;
+    }
+
+    private function runner(ListingSource ...$sources): MonitorRunner
+    {
+        return $this->runnerOnDatabase($this->makeDatabase(), ...$sources);
+    }
+
+    private function runnerOnDatabase(Database $database, ListingSource ...$sources): MonitorRunner
+    {
         $registry = new ContactRegistry($database);
 
         $notifier = new class ($this->sentMessages) implements Notifier {
@@ -83,6 +104,30 @@ final class MonitorRunnerTest extends TestCase
             public function send(string $text): void
             {
                 $this->sink[] = $text;
+            }
+        };
+
+        return new MonitorRunner(
+            sources: $sources,
+            seenStore: new SeenStore($database),
+            contactRegistry: $registry,
+            phoneDetector: new PhoneDetector(),
+            classifier: new TieredAdvertiserClassifier($registry),
+            formatter: new MessageFormatter(),
+            notifier: $notifier,
+            logger: new NullLogger(),
+            firstRunLimit: 2,
+        );
+    }
+
+    private function runnerWithThrowingNotifier(Database $database, ListingSource ...$sources): MonitorRunner
+    {
+        $registry = new ContactRegistry($database);
+
+        $notifier = new class implements Notifier {
+            public function send(string $text): void
+            {
+                throw new \RuntimeException('Telegram send failed');
             }
         };
 
@@ -165,5 +210,46 @@ final class MonitorRunnerTest extends TestCase
         $runner->run();
 
         self::assertCount(1, $this->sentMessages);
+    }
+
+    public function testHydrateFailureLeavesListingUnseenAndRetriesNextRun(): void
+    {
+        $listing = $this->listing('sreality:hydrate-fail', 'Volejte 777 123 456, primo od majitele');
+        $database = $this->makeDatabase();
+
+        // First run: hydrate() throws — listing must NOT be marked seen.
+        $throwingSource = $this->source([$listing], throwOnHydrate: true);
+        $firstRunner = $this->runnerOnDatabase($database, $throwingSource);
+        $firstRunner->run();
+
+        self::assertCount(0, $this->sentMessages, 'Nothing sent when hydrate throws');
+
+        // Second run: hydrate() succeeds — because the listing was not marked seen
+        // it is picked up again and delivered now.
+        $workingSource = $this->source([$listing]);
+        $secondRunner = $this->runnerOnDatabase($database, $workingSource);
+        $secondRunner->run();
+
+        self::assertCount(1, $this->sentMessages, 'Listing retried and sent after hydrate succeeds');
+    }
+
+    public function testSendFailureLeavesListingUnseenAndRetriesNextRun(): void
+    {
+        $listing = $this->listing('sreality:send-fail', 'Volejte 777 123 456, primo od majitele');
+        $database = $this->makeDatabase();
+
+        // First run: Notifier::send() throws — listing must NOT be marked seen.
+        $source = $this->source([$listing]);
+        $firstRunner = $this->runnerWithThrowingNotifier($database, $source);
+        $firstRunner->run();
+
+        self::assertCount(0, $this->sentMessages, 'Nothing sent when Notifier::send() throws');
+
+        // Second run: working notifier — because the listing was not marked seen
+        // it is picked up again and delivered now.
+        $secondRunner = $this->runnerOnDatabase($database, $source);
+        $secondRunner->run();
+
+        self::assertCount(1, $this->sentMessages, 'Listing retried and sent after notifier recovers');
     }
 }

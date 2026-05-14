@@ -10,6 +10,7 @@ interface ListingSource
 {
     /**
      * Cheap call: returns shallow listings (rawText/sellerMeta/structuredPhones may be empty).
+     * Implementations MUST return listings ordered newest-first; the first-run cap relies on this ordering.
      *
      * @return list<Listing>
      */
