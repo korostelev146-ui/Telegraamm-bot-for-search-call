@@ -43,6 +43,11 @@ final class MessageFormatter
             $lines[] = '📞 ' . $this->escape($phone->e164);
         }
 
+        $email = $listing->sellerMeta?->email;
+        if ($email !== null && $email !== '') {
+            $lines[] = '📧 ' . $this->escape($email);
+        }
+
         $badge = self::BADGES[$verdict->classification->value];
         $reason = $verdict->reasons[0] ?? '';
         $lines[] = $badge . ($reason !== '' ? ' — ' . $this->escape($reason) : '');
