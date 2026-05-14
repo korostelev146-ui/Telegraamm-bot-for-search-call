@@ -13,6 +13,11 @@ use App\Domain\PhoneOrigin;
  *
  * A Czech phone number is 9 digits whose first digit is 2-9, optionally prefixed
  * with +420 / 00420 and optionally grouped in 3-3-3 with spaces or dashes.
+ *
+ * Note: a bare 9-digit group in text with no marker word and no nearby currency
+ * (e.g. a property registry number or order ID) can be mis-detected as a phone.
+ * This is an accepted tradeoff — the advertiser classifier and the operator are
+ * the safety net for PhoneOrigin::TEXT numbers.
  */
 final class PhoneDetector
 {
@@ -62,8 +67,8 @@ final class PhoneDetector
 
         $found = [];
         foreach ($matches[0] as $index => [$rawMatch, $offset]) {
-            $trailing = substr($text, $offset + strlen($rawMatch), 6);
-            if (preg_match('/^\s*(?:Kc|kc|K\x{010d}|k\x{010d}|,-)/u', $trailing) === 1) {
+            $trailing = substr($text, $offset + strlen($rawMatch), 24);
+            if (preg_match('/^[\s\-]*(?:\d{3}[\s\-]*)*(?:Kč|Kc|CZK|,-)/ui', $trailing) === 1) {
                 continue; // a price, not a phone number
             }
 
@@ -82,7 +87,7 @@ final class PhoneDetector
 
     private function markerBefore(string $text, int $offset): ?string
     {
-        $window = strtolower(substr($text, max(0, $offset - 25), min($offset, 25)));
+        $window = mb_strtolower(substr($text, max(0, $offset - 25), min($offset, 25)), 'UTF-8');
 
         foreach (self::MARKERS as $marker) {
             if (str_contains($window, $marker)) {

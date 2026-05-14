@@ -96,4 +96,37 @@ final class PhoneDetectorTest extends TestCase
     {
         self::assertSame([], (new PhoneDetector())->detect($this->listing('Zadny kontakt zde')));
     }
+
+    public function testRejectsNumberFollowedByCzkLabel(): void
+    {
+        $phones = (new PhoneDetector())->detect($this->listing('Sleva 731 431 957 CZK k dispozici'));
+
+        self::assertSame([], $phones);
+    }
+
+    public function testRejectsPriceWithWideWhitespaceBeforeCurrency(): void
+    {
+        $phones = (new PhoneDetector())->detect($this->listing('Cena 250 000 000      Kc'));
+
+        self::assertSame([], $phones);
+    }
+
+    public function testExtractsMultiplePhonesFromOneText(): void
+    {
+        $phones = (new PhoneDetector())->detect($this->listing('Volejte 777 123 456 nebo 608 444 111'));
+
+        self::assertCount(2, $phones);
+        $e164 = array_map(static fn ($p) => $p->e164, $phones);
+        self::assertContains('+420777123456', $e164);
+        self::assertContains('+420608444111', $e164);
+    }
+
+    public function testExtractsPhoneAtStartOfText(): void
+    {
+        $phones = (new PhoneDetector())->detect($this->listing('608444111 je moje cislo'));
+
+        self::assertCount(1, $phones);
+        self::assertSame('+420608444111', $phones[0]->e164);
+        self::assertNull($phones[0]->marker);
+    }
 }
