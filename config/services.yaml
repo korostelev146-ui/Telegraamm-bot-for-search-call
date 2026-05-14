@@ -1,0 +1,20 @@
+parameters:
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+        bind:
+            $telegramToken: '%env(TELEGRAM_BOT_TOKEN)%'
+            $telegramChatId: '%env(TELEGRAM_CHAT_ID)%'
+            $databasePath: '%env(resolve:DATABASE_PATH)%'
+            $monitorRegion: '%env(MONITOR_REGION)%'
+            $monitorDealTypes: '%env(MONITOR_DEAL_TYPES)%'
+            $firstRunLimit: '%env(int:MONITOR_FIRST_RUN_LIMIT)%'
+
+    _instanceof:
+        App\Source\ListingSource:
+            tags: ['app.listing_source']
+
+    App\:
+        resource: '../src/'

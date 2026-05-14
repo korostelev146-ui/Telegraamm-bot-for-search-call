@@ -1,0 +1,11 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+      - .env.local
+    environment:
+      APP_ENV: prod
+    volumes:
+      - .:/app

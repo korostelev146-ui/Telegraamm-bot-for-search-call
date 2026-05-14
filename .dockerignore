@@ -1,0 +1,15 @@
+.git
+.idea
+.vscode
+.claude
+.env.local
+.env.dev
+.env.*.local
+var/cache
+var/log
+vendor
+AGENTS.md
+PLAN.md
+CLAUDE.md
+phpstan.neon
+ecs.php
