@@ -1,0 +1,27 @@
+{
+  "data": {
+    "listAdverts": {
+      "totalCount": 2,
+      "list": [
+        {
+          "id": "1002810",
+          "uri": "byt-2-kk-praha-argentinska",
+          "title": "Prodej bytu 2+kk",
+          "address": "Argentinska, Praha - Holesovice",
+          "price": 7500000,
+          "offerType": "PRODEJ",
+          "description": "Prostorny byt 2+kk. Bez realitky, volejte na 608 444 111."
+        },
+        {
+          "id": "1002811",
+          "uri": "byt-1-kk-praha-zizkov",
+          "title": "Pronajem bytu 1+kk",
+          "address": "Zizkov, Praha 3",
+          "price": 18000,
+          "offerType": "PRONAJEM",
+          "description": "Pekny byt k pronajmu."
+        }
+      ]
+    }
+  }
+}
