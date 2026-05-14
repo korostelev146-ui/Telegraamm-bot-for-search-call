@@ -48,7 +48,7 @@ final class SrealityClientTest extends TestCase
         self::assertCount(4, $client->fetchRecentListings());
     }
 
-    public function testHydratePrivateListingFillsSellerMetaAndPhones(): void
+    public function testHydratePrivateListingReadsTextAndContactFallback(): void
     {
         $http = new MockHttpClient([
             new MockResponse($this->fixture('sreality_list.json')),
@@ -59,12 +59,16 @@ final class SrealityClientTest extends TestCase
         $shallow = $client->fetchRecentListings()[0];
         $hydrated = $client->hydrate($shallow);
 
-        self::assertStringContainsString('777 123 456', $hydrated->rawText);
+        // text is a {name, value} object — value must reach rawText.
+        self::assertStringContainsString('Bez provize', $hydrated->rawText);
+        // Private sellers have no _embedded.seller — fall back to top-level contact.
         self::assertNotNull($hydrated->sellerMeta);
         self::assertFalse($hydrated->sellerMeta->hasPremise);
-        self::assertSame(1, $hydrated->sellerMeta->totalListingCount);
-        self::assertSame('Jan Novak', $hydrated->sellerMeta->name);
-        self::assertSame(['+420777123456'], $hydrated->structuredPhones);
+        self::assertNull($hydrated->sellerMeta->totalListingCount);
+        self::assertSame('Čenětická 2kk od vlastnika', $hydrated->sellerMeta->name);
+        self::assertSame('ruslan76731@gmail.com', $hydrated->sellerMeta->email);
+        // contact.phones is empty when unauthenticated.
+        self::assertSame([], $hydrated->structuredPhones);
     }
 
     public function testHydrateAgencyListingMarksPremise(): void
@@ -78,10 +82,12 @@ final class SrealityClientTest extends TestCase
         $shallow = $client->fetchRecentListings()[0];
         $hydrated = $client->hydrate($shallow);
 
+        self::assertStringContainsString('Bakers Court', $hydrated->rawText);
         self::assertNotNull($hydrated->sellerMeta);
         self::assertTrue($hydrated->sellerMeta->hasPremise);
-        self::assertSame(9, $hydrated->sellerMeta->totalListingCount);
-        self::assertSame(['+420774956705'], $hydrated->structuredPhones);
+        self::assertSame(6, $hydrated->sellerMeta->totalListingCount);
+        self::assertSame('jiri@bakerscourt.cz', $hydrated->sellerMeta->email);
+        self::assertSame(['+420608444111'], $hydrated->structuredPhones);
     }
 
     public function testHydrateMinimalDetailDegradesGracefully(): void

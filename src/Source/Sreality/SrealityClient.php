@@ -107,7 +107,7 @@ final class SrealityClient implements ListingSource
             ->request('GET', self::DETAIL_URL . $hashId, $this->options())
             ->toArray();
 
-        $text = is_string($data['text'] ?? null) ? $data['text'] : '';
+        $text = $this->extractText($data);
         $seller = $this->extractSeller($data);
 
         return $listing->withDetails(
@@ -158,6 +158,22 @@ final class SrealityClient implements ListingSource
     }
 
     /**
+     * The detail endpoint returns `text` as a {name, value} object. Fall back to
+     * a bare string for resilience against future shape changes.
+     *
+     * @param array<mixed, mixed> $data
+     */
+    private function extractText(array $data): string
+    {
+        $text = $data['text'] ?? null;
+        if (is_array($text)) {
+            return is_string($text['value'] ?? null) ? $text['value'] : '';
+        }
+
+        return is_string($text) ? $text : '';
+    }
+
+    /**
      * @param array<mixed, mixed> $data
      * @return array{meta: ?SellerMeta, phones: list<string>}
      */
@@ -166,17 +182,35 @@ final class SrealityClient implements ListingSource
         $embedded = is_array($data['_embedded'] ?? null) ? $data['_embedded'] : [];
         $seller = is_array($embedded['seller'] ?? null) ? $embedded['seller'] : null;
 
-        if ($seller === null) {
-            return [
-                'meta' => null,
-                'phones' => [],
-            ];
+        if ($seller !== null) {
+            return $this->extractBrokerSeller($seller);
         }
 
+        // Private sellers have no broker profile under _embedded.seller; their
+        // name, e-mail and (only when logged in) phone live in the top-level
+        // `contact` object instead.
+        $contact = is_array($data['contact'] ?? null) ? $data['contact'] : null;
+        if ($contact !== null) {
+            return $this->extractContactSeller($contact);
+        }
+
+        return [
+            'meta' => null,
+            'phones' => [],
+        ];
+    }
+
+    /**
+     * @param array<mixed, mixed> $seller
+     * @return array{meta: SellerMeta, phones: list<string>}
+     */
+    private function extractBrokerSeller(array $seller): array
+    {
         $sellerEmbedded = is_array($seller['_embedded'] ?? null) ? $seller['_embedded'] : [];
         $hasPremise = isset($sellerEmbedded['premise']);
 
         $name = is_string($seller['user_name'] ?? null) ? $seller['user_name'] : null;
+        $email = is_string($seller['email'] ?? null) ? $seller['email'] : null;
 
         $specialization = is_array($seller['specialization'] ?? null) ? $seller['specialization'] : [];
         $categories = is_array($specialization['category'] ?? null) ? $specialization['category'] : [];
@@ -190,9 +224,39 @@ final class SrealityClient implements ListingSource
             }
         }
 
+        return [
+            'meta' => new SellerMeta($hasPremise, $totalListingCount, $name, $email),
+            'phones' => $this->extractPhones($seller['phones'] ?? null),
+        ];
+    }
+
+    /**
+     * @param array<mixed, mixed> $contact
+     * @return array{meta: SellerMeta, phones: list<string>}
+     */
+    private function extractContactSeller(array $contact): array
+    {
+        $name = is_string($contact['name'] ?? null) ? $contact['name'] : null;
+        $email = is_string($contact['email'] ?? null) ? $contact['email'] : null;
+
+        // A bare contact carries no premise or listing-count signal — treat it
+        // as a private seller (hasPremise: false, totalListingCount: null).
+        return [
+            'meta' => new SellerMeta(false, null, $name, $email),
+            'phones' => $this->extractPhones($contact['phones'] ?? null),
+        ];
+    }
+
+    /**
+     * Canonicalises a Sreality phones array (list of {code, type, number}) to a
+     * de-duplicated list of E.164 numbers.
+     *
+     * @return list<string>
+     */
+    private function extractPhones(mixed $rawPhones): array
+    {
         $phones = [];
-        $rawPhones = is_array($seller['phones'] ?? null) ? $seller['phones'] : [];
-        foreach ($rawPhones as $phone) {
+        foreach (is_array($rawPhones) ? $rawPhones : [] as $phone) {
             if (! is_array($phone)) {
                 continue;
             }
@@ -203,10 +267,7 @@ final class SrealityClient implements ListingSource
             }
         }
 
-        return [
-            'meta' => new SellerMeta($hasPremise, $totalListingCount, $name),
-            'phones' => array_keys($phones),
-        ];
+        return array_keys($phones);
     }
 
     /**
