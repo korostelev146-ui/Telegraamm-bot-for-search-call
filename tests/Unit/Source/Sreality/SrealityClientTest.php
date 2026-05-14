@@ -81,5 +81,22 @@ final class SrealityClientTest extends TestCase
         self::assertNotNull($hydrated->sellerMeta);
         self::assertTrue($hydrated->sellerMeta->hasPremise);
         self::assertSame(9, $hydrated->sellerMeta->totalListingCount);
+        self::assertSame(['+420774956705'], $hydrated->structuredPhones);
+    }
+
+    public function testHydrateMinimalDetailDegradesGracefully(): void
+    {
+        $http = new MockHttpClient([
+            new MockResponse($this->fixture('sreality_list.json')),
+            new MockResponse($this->fixture('sreality_detail_minimal.json')),
+        ]);
+        $client = new SrealityClient($http, new NullLogger(), 'praha', 'sale');
+
+        $shallow = $client->fetchRecentListings()[0];
+        $hydrated = $client->hydrate($shallow);
+
+        self::assertSame('', $hydrated->rawText);
+        self::assertNull($hydrated->sellerMeta);
+        self::assertSame([], $hydrated->structuredPhones);
     }
 }

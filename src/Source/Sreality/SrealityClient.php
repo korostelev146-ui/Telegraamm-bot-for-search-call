@@ -34,6 +34,11 @@ final class SrealityClient implements ListingSource
     ];
 
     /**
+     * Sreality category_main_cb for apartments.
+     */
+    private const APARTMENT_CATEGORY = 1;
+
+    /**
      * Sreality category_type_cb codes.
      */
     private const DEAL_TYPE_CODES = [
@@ -56,7 +61,7 @@ final class SrealityClient implements ListingSource
 
         foreach ($this->dealTypes() as $dealType) {
             $query = http_build_query([
-                'category_main_cb' => 1,
+                'category_main_cb' => self::APARTMENT_CATEGORY,
                 'category_type_cb' => self::DEAL_TYPE_CODES[$dealType->value],
                 'locality_region_id' => $regionId,
                 'per_page' => 60,
@@ -86,6 +91,12 @@ final class SrealityClient implements ListingSource
 
     public function hydrate(Listing $listing): Listing
     {
+        if ($listing->source !== Source::SREALITY) {
+            throw new \InvalidArgumentException(
+                sprintf('SrealityClient cannot hydrate a %s listing', $listing->source->value),
+            );
+        }
+
         $hashId = substr($listing->id, strlen('sreality:'));
 
         $this->logger->info('Sreality detail request', [
@@ -185,10 +196,10 @@ final class SrealityClient implements ListingSource
             if (! is_array($phone)) {
                 continue;
             }
-            $code = is_string($phone['code'] ?? null) ? $phone['code'] : '420';
             $number = is_string($phone['number'] ?? null) ? $phone['number'] : '';
-            if ($number !== '') {
-                $phones['+' . $code . $number] = true;
+            $e164 = $this->toE164($number);
+            if ($e164 !== null) {
+                $phones[$e164] = true;
             }
         }
 
@@ -196,6 +207,22 @@ final class SrealityClient implements ListingSource
             'meta' => new SellerMeta($hasPremise, $totalListingCount, $name),
             'phones' => array_keys($phones),
         ];
+    }
+
+    /**
+     * Canonicalises a Czech phone number to "+420" + 9 digits, matching the format
+     * PhoneDetector produces, so ContactRegistry keys stay consistent across sources.
+     */
+    private function toE164(string $number): ?string
+    {
+        $digits = preg_replace('/\D/', '', $number) ?? '';
+        if (strlen($digits) < 9) {
+            return null;
+        }
+
+        // The Czech national number is always the last 9 digits (any 420 / 00420
+        // country-code prefix sits in front of it).
+        return '+420' . substr($digits, -9);
     }
 
     /**
