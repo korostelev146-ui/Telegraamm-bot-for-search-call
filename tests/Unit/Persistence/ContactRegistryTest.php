@@ -71,6 +71,16 @@ final class ContactRegistryTest extends TestCase
         self::assertSame(Classification::OWNER, $registry->getVerdict('+420777123456'));
     }
 
+    public function testRecordEvidenceDoesNotClobberExistingVerdict(): void
+    {
+        $registry = $this->registry();
+        $registry->recordEvidence('+420777123456', 'sreality:1', Source::SREALITY, null);
+        $registry->setVerdict('+420777123456', Classification::REALTOR, Confidence::HIGH);
+        $registry->recordEvidence('+420777123456', 'sreality:2', Source::SREALITY, null);
+
+        self::assertSame(Classification::REALTOR, $registry->getVerdict('+420777123456'));
+    }
+
     public function testUnknownPhoneHasZeroCounts(): void
     {
         $registry = $this->registry();
