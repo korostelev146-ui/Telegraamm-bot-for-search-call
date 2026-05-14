@@ -88,11 +88,6 @@ final class MonitorRunner
         }
 
         $phones = $this->phoneDetector->detect($listing);
-        if ($phones === []) {
-            $this->seenStore->markSeen($listing->id, $listing->source);
-
-            return false;
-        }
 
         foreach ($phones as $phone) {
             $this->contactRegistry->recordEvidence(
@@ -106,6 +101,14 @@ final class MonitorRunner
         $verdict = $this->classifier->classify($listing, $phones);
 
         if ($verdict->classification === Classification::REALTOR) {
+            $this->seenStore->markSeen($listing->id, $listing->source);
+
+            return false;
+        }
+
+        // No phone and no positive owner signal — nothing actionable to send.
+        // A confirmed owner is still worth sending (e-mail / link in the message).
+        if ($phones === [] && $verdict->classification !== Classification::OWNER) {
             $this->seenStore->markSeen($listing->id, $listing->source);
 
             return false;

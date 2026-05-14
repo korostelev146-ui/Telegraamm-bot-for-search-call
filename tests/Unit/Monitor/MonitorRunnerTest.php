@@ -168,6 +168,18 @@ final class MonitorRunnerTest extends TestCase
         self::assertCount(0, $this->sentMessages);
     }
 
+    public function testSendsOwnerListingWithoutAnyPhone(): void
+    {
+        // Owner self-identification in the text, but no phone anywhere.
+        $runner = $this->runner($this->source([
+            $this->listing('sreality:1', 'Prodam byt primo od majitele, bez provize'),
+        ]));
+
+        $runner->run();
+
+        self::assertCount(1, $this->sentMessages);
+    }
+
     public function testSkipsRealtorListing(): void
     {
         $runner = $this->runner($this->source([
