@@ -26,3 +26,6 @@
 /phpunit.xml
 /.phpunit.cache/
 ###< phpunit/phpunit ###
+
+# Symfony auto-generated config reference
+/config/reference.php
