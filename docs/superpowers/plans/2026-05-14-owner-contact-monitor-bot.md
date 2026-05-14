@@ -1537,7 +1537,8 @@ final class TieredAdvertiserClassifierTest extends TestCase
 
     public function testTier1OwnerSelfIdPhraseIsOwner(): void
     {
-        $listing = $this->listing('Prodej primo od majitele, RK nevolat', null);
+        // Real accented Czech — normalise() must strip diacritics for the match to land.
+        $listing = $this->listing('Prodej přímo od majitele, RK nevolat', null);
 
         $verdict = $this->classifier->classify($listing, [$this->phone('+420777123456')]);
 
@@ -1580,7 +1581,7 @@ final class TieredAdvertiserClassifierTest extends TestCase
 
     public function testTier2RealtorLanguageIsRealtor(): void
     {
-        $listing = $this->listing('Nase realitni kancelar nabizi, provize v cene', null);
+        $listing = $this->listing('Naše realitní kancelář nabízí, provize v ceně', null);
 
         $verdict = $this->classifier->classify($listing, [$this->phone('+420777123456')]);
 
@@ -1599,11 +1600,37 @@ final class TieredAdvertiserClassifierTest extends TestCase
     public function testOwnerSelfIdBeatsRealtorLanguage(): void
     {
         // Tier 1 runs before Tier 2: owner self-ID wins even if realtor words also appear.
-        $listing = $this->listing('Provize zadna, prodej primo od majitele', null);
+        $listing = $this->listing('Provize žádná, prodej přímo od majitele', null);
 
         $verdict = $this->classifier->classify($listing, [$this->phone('+420777123456')]);
 
         self::assertSame(Classification::OWNER, $verdict->classification);
+    }
+
+    public function testTier0BeatsTier1WhenSellerIsAgencyButTextLooksLikeOwner(): void
+    {
+        // Tier 0 runs before Tier 1: an agency seller stays REALTOR even with owner self-ID text.
+        $listing = $this->listing(
+            'Přímo od majitele, RK nevolat',
+            new SellerMeta(hasPremise: true, totalListingCount: 1, name: 'RK'),
+        );
+
+        $verdict = $this->classifier->classify($listing, [$this->phone('+420777123456')]);
+
+        self::assertSame(Classification::REALTOR, $verdict->classification);
+    }
+
+    public function testSellerWithTwoListingsFallsThroughToUnknown(): void
+    {
+        // Tier 0 needs > 2, Tier 1 needs === 1 — exactly 2 falls through (intentional).
+        $listing = $this->listing(
+            'Hezky slunny byt',
+            new SellerMeta(hasPremise: false, totalListingCount: 2, name: 'Jan'),
+        );
+
+        $verdict = $this->classifier->classify($listing, [$this->phone('+420777123456')]);
+
+        self::assertSame(Classification::UNKNOWN, $verdict->classification);
     }
 
     public function testVerdictCarriesReasons(): void
@@ -1685,6 +1712,13 @@ final class TieredAdvertiserClassifier implements AdvertiserClassifier
     private const FREQUENT_LISTING_THRESHOLD = 3;
     private const CROSS_SITE_THRESHOLD = 2;
     private const HIGH_SELLER_COUNT_THRESHOLD = 2;
+
+    /** Czech diacritics → ASCII base letters (locale-independent transliteration). */
+    private const ACCENT_MAP = [
+        'á' => 'a', 'č' => 'c', 'ď' => 'd', 'é' => 'e', 'ě' => 'e', 'í' => 'i',
+        'ň' => 'n', 'ó' => 'o', 'ř' => 'r', 'š' => 's', 'ť' => 't', 'ú' => 'u',
+        'ů' => 'u', 'ý' => 'y', 'ž' => 'z',
+    ];
 
     public function __construct(
         private readonly ContactRegistry $registry,
@@ -1797,10 +1831,9 @@ final class TieredAdvertiserClassifier implements AdvertiserClassifier
 
     private function normalise(string $text): string
     {
-        $lower = mb_strtolower($text);
-        $stripped = @iconv('UTF-8', 'ASCII//TRANSLIT', $lower);
-
-        return $stripped === false ? $lower : $stripped;
+        // Deterministic, locale-independent: lowercase, then map Czech diacritics
+        // to ASCII so the ASCII phrase constants match real accented listing text.
+        return strtr(mb_strtolower($text), self::ACCENT_MAP);
     }
 }
 ```
@@ -1808,7 +1841,7 @@ final class TieredAdvertiserClassifier implements AdvertiserClassifier
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `docker compose run --rm bot vendor/bin/phpunit --filter TieredAdvertiserClassifierTest`
-Expected: PASS (11 tests).
+Expected: PASS (13 tests).
 
 - [ ] **Step 6: Run quality tools**
 
