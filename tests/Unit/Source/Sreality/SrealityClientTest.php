@@ -34,7 +34,32 @@ final class SrealityClientTest extends TestCase
         self::assertSame(Source::SREALITY, $listings[0]->source);
         self::assertSame(DealType::SALE, $listings[0]->dealType);
         self::assertSame('Praha 7 - Holesovice', $listings[0]->location);
-        self::assertStringContainsString('111', $listings[0]->url);
+        // The public detail URL needs the full SEO path; a bare /detail/{id} 404s.
+        self::assertSame(
+            'https://www.sreality.cz/detail/prodej/byt/2+kk/praha-7-holesovice/111',
+            $listings[0]->url,
+        );
+        self::assertSame(
+            'https://www.sreality.cz/detail/prodej/byt/3+1/praha-5-smichov/222',
+            $listings[1]->url,
+        );
+    }
+
+    public function testFetchRecentListingsBuildsDetailUrlWhenSeoIsMissing(): void
+    {
+        $http = new MockHttpClient([new MockResponse(
+            '{"_embedded":{"estates":[{"hash_id":333,"name":"Byt","locality":"Praha"}]}}',
+        )]);
+        $client = new SrealityClient($http, new NullLogger(), 'praha', 'rent');
+
+        $listings = $client->fetchRecentListings();
+
+        // No SEO block — fall back to deal-type-derived path with valid slug
+        // tokens; Sreality 301-redirects a non-canonical path to the real page.
+        self::assertSame(
+            'https://www.sreality.cz/detail/pronajem/byt/1+kk/praha/333',
+            $listings[0]->url,
+        );
     }
 
     public function testFetchRecentListingsCombinesSaleAndRent(): void

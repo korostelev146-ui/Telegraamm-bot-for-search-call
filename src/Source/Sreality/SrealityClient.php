@@ -46,6 +46,43 @@ final class SrealityClient implements ListingSource
         'rent' => 2,
     ];
 
+    /**
+     * Public-URL path slugs for the SEO category codes. The detail page lives at
+     * /detail/{type}/{main}/{sub}/{locality}/{hash_id} — a bare /detail/{hash_id}
+     * 404s. A non-canonical (but recognised) disposition slug still resolves:
+     * Sreality 301-redirects it to the real page, so unknown codes fall back to
+     * a valid token rather than risking a 404.
+     */
+    private const TYPE_CB_SLUGS = [
+        1 => 'prodej',
+        2 => 'pronajem',
+        3 => 'drazba',
+    ];
+
+    private const MAIN_CB_SLUGS = [
+        1 => 'byt',
+        2 => 'dum',
+        3 => 'pozemek',
+        4 => 'komercni-prostory',
+        5 => 'ostatni',
+    ];
+
+    private const SUB_CB_SLUGS = [
+        2 => '1+kk',
+        3 => '1+1',
+        4 => '2+kk',
+        5 => '2+1',
+        6 => '3+kk',
+        7 => '3+1',
+        8 => '4+kk',
+        9 => '4+1',
+        10 => '5+kk',
+        11 => '5+1',
+        12 => '6-a-vice',
+        16 => 'atypicky',
+        47 => 'pokoj',
+    ];
+
     public function __construct(
         private readonly HttpClientInterface $httpClient,
         private readonly LoggerInterface $logger,
@@ -150,11 +187,46 @@ final class SrealityClient implements ListingSource
             price: $price,
             dealType: $dealType,
             location: $locality,
-            url: 'https://www.sreality.cz/detail/' . $hashId,
+            url: $this->buildDetailUrl($hashId, $dealType, $estate['seo'] ?? null),
             rawText: '',
             sellerMeta: null,
             structuredPhones: [],
         );
+    }
+
+    /**
+     * Builds the public detail-page URL from the list endpoint's `seo` block:
+     * /detail/{type}/{main}/{sub}/{locality}/{hash_id}. Missing or unrecognised
+     * codes fall back to valid tokens (the deal type for the transaction, `byt`,
+     * `1+kk`, `praha`) — Sreality 301-redirects a non-canonical path to the real
+     * listing, so the only true 404 is a bare /detail/{hash_id}.
+     */
+    private function buildDetailUrl(int $hashId, DealType $dealType, mixed $seo): string
+    {
+        $seo = is_array($seo) ? $seo : [];
+
+        $type = self::TYPE_CB_SLUGS[$this->seoCode($seo, 'category_type_cb')]
+            ?? ($dealType === DealType::RENT ? 'pronajem' : 'prodej');
+        $main = self::MAIN_CB_SLUGS[$this->seoCode($seo, 'category_main_cb')] ?? 'byt';
+        $sub = self::SUB_CB_SLUGS[$this->seoCode($seo, 'category_sub_cb')] ?? '1+kk';
+        $locality = is_string($seo['locality'] ?? null) && $seo['locality'] !== ''
+            ? $seo['locality']
+            : 'praha';
+
+        return sprintf('https://www.sreality.cz/detail/%s/%s/%s/%s/%d', $type, $main, $sub, $locality, $hashId);
+    }
+
+    /**
+     * Reads an integer SEO category code; a missing or non-integer value yields
+     * 0, which no slug map contains, so the caller falls back to a valid token.
+     *
+     * @param array<mixed, mixed> $seo
+     */
+    private function seoCode(array $seo, string $key): int
+    {
+        $value = $seo[$key] ?? null;
+
+        return is_int($value) ? $value : 0;
     }
 
     /**
