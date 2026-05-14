@@ -59,7 +59,7 @@
         "post-update-cmd": [
             "@auto-scripts"
         ],
-        "phpstan": "vendor/bin/phpstan analyse",
+        "phpstan": "vendor/bin/phpstan analyse --memory-limit=512M",
         "ecs": "vendor/bin/ecs check",
         "ecs:fix": "vendor/bin/ecs check --fix",
         "test": "vendor/bin/phpunit",
