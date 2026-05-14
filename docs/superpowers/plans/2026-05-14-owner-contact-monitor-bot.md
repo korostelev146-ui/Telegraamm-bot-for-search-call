@@ -1041,7 +1041,7 @@ final class Database
 
         $pdo->exec(<<<'SQL'
             CREATE TABLE IF NOT EXISTS contact_evidence (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                id         INTEGER PRIMARY KEY,
                 phone_e164 TEXT NOT NULL,
                 listing_id TEXT NOT NULL,
                 source     TEXT NOT NULL,
