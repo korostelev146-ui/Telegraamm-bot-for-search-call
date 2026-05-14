@@ -18,3 +18,7 @@ services:
 
     App\:
         resource: '../src/'
+
+    App\Monitor\MonitorRunner:
+        arguments:
+            $sources: !tagged_iterator app.listing_source
