@@ -7,14 +7,24 @@
         "name": "Prodej bytu 2+kk 50 m2",
         "locality": "Praha 7 - Holesovice",
         "price": 7500000,
-        "seo": { "locality": "praha-7-holesovice" }
+        "seo": {
+          "category_main_cb": 1,
+          "category_sub_cb": 4,
+          "category_type_cb": 1,
+          "locality": "praha-7-holesovice"
+        }
       },
       {
         "hash_id": 222,
         "name": "Prodej bytu 3+1 80 m2",
         "locality": "Praha 5 - Smichov",
         "price": 9900000,
-        "seo": { "locality": "praha-5-smichov" }
+        "seo": {
+          "category_main_cb": 1,
+          "category_sub_cb": 7,
+          "category_type_cb": 1,
+          "locality": "praha-5-smichov"
+        }
       }
     ]
   }

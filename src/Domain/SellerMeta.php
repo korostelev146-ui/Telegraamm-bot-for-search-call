@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace App\Domain;
 
 /**
- * Seller metadata that only Sreality exposes. Bezrealitky listings carry null.
+ * Seller metadata. Sreality exposes the richest data (premise flag, listing
+ * count, name, e-mail); private Sreality sellers expose only name + e-mail.
+ * Bezrealitky listings carry null.
  */
 final readonly class SellerMeta
 {
@@ -13,6 +15,7 @@ final readonly class SellerMeta
         public bool $hasPremise,
         public ?int $totalListingCount,
         public ?string $name,
+        public ?string $email = null,
     ) {
     }
 }

@@ -88,11 +88,6 @@ final class MonitorRunner
         }
 
         $phones = $this->phoneDetector->detect($listing);
-        if ($phones === []) {
-            $this->seenStore->markSeen($listing->id, $listing->source);
-
-            return false;
-        }
 
         foreach ($phones as $phone) {
             $this->contactRegistry->recordEvidence(
@@ -109,6 +104,23 @@ final class MonitorRunner
             $this->seenStore->markSeen($listing->id, $listing->source);
 
             return false;
+        }
+
+        // A phone-less listing is only a lead when it's a confirmed owner that
+        // still carries a contact e-mail. Everything else without a phone — an
+        // UNKNOWN seller, or an owner with no contact at all (e.g. a link-only
+        // Bezrealitky listing) — has nothing actionable to send.
+        if ($phones === []) {
+            $sellerMeta = $listing->sellerMeta;
+            $hasEmail = $sellerMeta !== null
+                && $sellerMeta->email !== null
+                && $sellerMeta->email !== '';
+
+            if ($verdict->classification !== Classification::OWNER || ! $hasEmail) {
+                $this->seenStore->markSeen($listing->id, $listing->source);
+
+                return false;
+            }
         }
 
         if ($isFirstRun && $sentThisSource >= $this->firstRunLimit) {

@@ -1,11 +1,14 @@
 {
-  "name": "Prodej bytu 2+kk 50 m2",
-  "text": "Prodam slunny byt 2+kk. Volejte na 777 123 456, jsem majitel.",
-  "_embedded": {
-    "seller": {
-      "user_name": "Jan Novak",
-      "phones": [ { "code": "420", "type": "MOB", "number": "777123456" } ],
-      "specialization": { "category": [ { "category_main_cb": 1, "num": 1 } ] }
+    "text": {
+        "name": "Popis",
+        "value": "Nabízíme k prodeji byt 2+kk v prestižní lokalitě Prahy. Byt je v osobním vlastnictví a nachází se v oblíbené lokalitě. Pokud Vás byt zaujal, neváhejte nám napsat nebo zavolat. Bez provize."
+    },
+    "contact": {
+        "phones": [],
+        "name": "Čenětická 2kk od vlastnika",
+        "email": "ruslan76731@gmail.com"
+    },
+    "_embedded": {
+        "images": []
     }
-  }
 }

@@ -168,6 +168,41 @@ final class MonitorRunnerTest extends TestCase
         self::assertCount(0, $this->sentMessages);
     }
 
+    public function testSendsOwnerListingWithoutPhoneButWithEmail(): void
+    {
+        // Owner self-identification in the text and no phone, but a contact
+        // e-mail (e.g. a Sreality private seller) — still an actionable lead.
+        $runner = $this->runner($this->source([
+            $this->listing(
+                'sreality:1',
+                'Prodam byt primo od majitele, bez provize',
+                new SellerMeta(
+                    hasPremise: false,
+                    totalListingCount: null,
+                    name: 'Jan',
+                    email: 'jan@example.cz',
+                ),
+            ),
+        ]));
+
+        $runner->run();
+
+        self::assertCount(1, $this->sentMessages);
+    }
+
+    public function testSkipsOwnerListingWithoutPhoneOrEmail(): void
+    {
+        // Owner self-identification in the text, but no phone and no e-mail
+        // anywhere (e.g. a link-only Bezrealitky listing) — nothing to act on.
+        $runner = $this->runner($this->source([
+            $this->listing('sreality:1', 'Prodam byt primo od majitele, bez provize'),
+        ]));
+
+        $runner->run();
+
+        self::assertCount(0, $this->sentMessages);
+    }
+
     public function testSkipsRealtorListing(): void
     {
         $runner = $this->runner($this->source([

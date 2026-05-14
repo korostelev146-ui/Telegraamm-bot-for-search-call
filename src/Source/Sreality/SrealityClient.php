@@ -46,6 +46,43 @@ final class SrealityClient implements ListingSource
         'rent' => 2,
     ];
 
+    /**
+     * Public-URL path slugs for the SEO category codes. The detail page lives at
+     * /detail/{type}/{main}/{sub}/{locality}/{hash_id} — a bare /detail/{hash_id}
+     * 404s. A non-canonical (but recognised) disposition slug still resolves:
+     * Sreality 301-redirects it to the real page, so unknown codes fall back to
+     * a valid token rather than risking a 404.
+     */
+    private const TYPE_CB_SLUGS = [
+        1 => 'prodej',
+        2 => 'pronajem',
+        3 => 'drazba',
+    ];
+
+    private const MAIN_CB_SLUGS = [
+        1 => 'byt',
+        2 => 'dum',
+        3 => 'pozemek',
+        4 => 'komercni-prostory',
+        5 => 'ostatni',
+    ];
+
+    private const SUB_CB_SLUGS = [
+        2 => '1+kk',
+        3 => '1+1',
+        4 => '2+kk',
+        5 => '2+1',
+        6 => '3+kk',
+        7 => '3+1',
+        8 => '4+kk',
+        9 => '4+1',
+        10 => '5+kk',
+        11 => '5+1',
+        12 => '6-a-vice',
+        16 => 'atypicky',
+        47 => 'pokoj',
+    ];
+
     public function __construct(
         private readonly HttpClientInterface $httpClient,
         private readonly LoggerInterface $logger,
@@ -107,7 +144,7 @@ final class SrealityClient implements ListingSource
             ->request('GET', self::DETAIL_URL . $hashId, $this->options())
             ->toArray();
 
-        $text = is_string($data['text'] ?? null) ? $data['text'] : '';
+        $text = $this->extractText($data);
         $seller = $this->extractSeller($data);
 
         return $listing->withDetails(
@@ -150,11 +187,62 @@ final class SrealityClient implements ListingSource
             price: $price,
             dealType: $dealType,
             location: $locality,
-            url: 'https://www.sreality.cz/detail/' . $hashId,
+            url: $this->buildDetailUrl($hashId, $dealType, $estate['seo'] ?? null),
             rawText: '',
             sellerMeta: null,
             structuredPhones: [],
         );
+    }
+
+    /**
+     * Builds the public detail-page URL from the list endpoint's `seo` block:
+     * /detail/{type}/{main}/{sub}/{locality}/{hash_id}. Missing or unrecognised
+     * codes fall back to valid tokens (the deal type for the transaction, `byt`,
+     * `1+kk`, `praha`) — Sreality 301-redirects a non-canonical path to the real
+     * listing, so the only true 404 is a bare /detail/{hash_id}.
+     */
+    private function buildDetailUrl(int $hashId, DealType $dealType, mixed $seo): string
+    {
+        $seo = is_array($seo) ? $seo : [];
+
+        $type = self::TYPE_CB_SLUGS[$this->seoCode($seo, 'category_type_cb')]
+            ?? ($dealType === DealType::RENT ? 'pronajem' : 'prodej');
+        $main = self::MAIN_CB_SLUGS[$this->seoCode($seo, 'category_main_cb')] ?? 'byt';
+        $sub = self::SUB_CB_SLUGS[$this->seoCode($seo, 'category_sub_cb')] ?? '1+kk';
+        $locality = is_string($seo['locality'] ?? null) && $seo['locality'] !== ''
+            ? $seo['locality']
+            : 'praha';
+
+        return sprintf('https://www.sreality.cz/detail/%s/%s/%s/%s/%d', $type, $main, $sub, $locality, $hashId);
+    }
+
+    /**
+     * Reads an integer SEO category code; a missing or non-integer value yields
+     * 0, which no slug map contains, so the caller falls back to a valid token.
+     *
+     * @param array<mixed, mixed> $seo
+     */
+    private function seoCode(array $seo, string $key): int
+    {
+        $value = $seo[$key] ?? null;
+
+        return is_int($value) ? $value : 0;
+    }
+
+    /**
+     * The detail endpoint returns `text` as a {name, value} object. Fall back to
+     * a bare string for resilience against future shape changes.
+     *
+     * @param array<mixed, mixed> $data
+     */
+    private function extractText(array $data): string
+    {
+        $text = $data['text'] ?? null;
+        if (is_array($text)) {
+            return is_string($text['value'] ?? null) ? $text['value'] : '';
+        }
+
+        return is_string($text) ? $text : '';
     }
 
     /**
@@ -166,17 +254,35 @@ final class SrealityClient implements ListingSource
         $embedded = is_array($data['_embedded'] ?? null) ? $data['_embedded'] : [];
         $seller = is_array($embedded['seller'] ?? null) ? $embedded['seller'] : null;
 
-        if ($seller === null) {
-            return [
-                'meta' => null,
-                'phones' => [],
-            ];
+        if ($seller !== null) {
+            return $this->extractBrokerSeller($seller);
         }
 
+        // Private sellers have no broker profile under _embedded.seller; their
+        // name, e-mail and (only when logged in) phone live in the top-level
+        // `contact` object instead.
+        $contact = is_array($data['contact'] ?? null) ? $data['contact'] : null;
+        if ($contact !== null) {
+            return $this->extractContactSeller($contact);
+        }
+
+        return [
+            'meta' => null,
+            'phones' => [],
+        ];
+    }
+
+    /**
+     * @param array<mixed, mixed> $seller
+     * @return array{meta: SellerMeta, phones: list<string>}
+     */
+    private function extractBrokerSeller(array $seller): array
+    {
         $sellerEmbedded = is_array($seller['_embedded'] ?? null) ? $seller['_embedded'] : [];
         $hasPremise = isset($sellerEmbedded['premise']);
 
         $name = is_string($seller['user_name'] ?? null) ? $seller['user_name'] : null;
+        $email = is_string($seller['email'] ?? null) ? $seller['email'] : null;
 
         $specialization = is_array($seller['specialization'] ?? null) ? $seller['specialization'] : [];
         $categories = is_array($specialization['category'] ?? null) ? $specialization['category'] : [];
@@ -190,9 +296,39 @@ final class SrealityClient implements ListingSource
             }
         }
 
+        return [
+            'meta' => new SellerMeta($hasPremise, $totalListingCount, $name, $email),
+            'phones' => $this->extractPhones($seller['phones'] ?? null),
+        ];
+    }
+
+    /**
+     * @param array<mixed, mixed> $contact
+     * @return array{meta: SellerMeta, phones: list<string>}
+     */
+    private function extractContactSeller(array $contact): array
+    {
+        $name = is_string($contact['name'] ?? null) ? $contact['name'] : null;
+        $email = is_string($contact['email'] ?? null) ? $contact['email'] : null;
+
+        // A bare contact carries no premise or listing-count signal — treat it
+        // as a private seller (hasPremise: false, totalListingCount: null).
+        return [
+            'meta' => new SellerMeta(false, null, $name, $email),
+            'phones' => $this->extractPhones($contact['phones'] ?? null),
+        ];
+    }
+
+    /**
+     * Canonicalises a Sreality phones array (list of {code, type, number}) to a
+     * de-duplicated list of E.164 numbers.
+     *
+     * @return list<string>
+     */
+    private function extractPhones(mixed $rawPhones): array
+    {
         $phones = [];
-        $rawPhones = is_array($seller['phones'] ?? null) ? $seller['phones'] : [];
-        foreach ($rawPhones as $phone) {
+        foreach (is_array($rawPhones) ? $rawPhones : [] as $phone) {
             if (! is_array($phone)) {
                 continue;
             }
@@ -203,10 +339,7 @@ final class SrealityClient implements ListingSource
             }
         }
 
-        return [
-            'meta' => new SellerMeta($hasPremise, $totalListingCount, $name),
-            'phones' => array_keys($phones),
-        ];
+        return array_keys($phones);
     }
 
     /**

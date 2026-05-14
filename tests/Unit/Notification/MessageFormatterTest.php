@@ -10,6 +10,7 @@ use App\Domain\DealType;
 use App\Domain\DetectedPhone;
 use App\Domain\Listing;
 use App\Domain\PhoneOrigin;
+use App\Domain\SellerMeta;
 use App\Domain\Source;
 use App\Domain\Verdict;
 use App\Notification\MessageFormatter;
@@ -201,5 +202,46 @@ final class MessageFormatterTest extends TestCase
 
         self::assertStringContainsString('…', $message);
         self::assertStringNotContainsString(str_repeat('a', 300), $message);
+    }
+
+    public function testIncludesSellerEmailWhenPresent(): void
+    {
+        $listing = new Listing(
+            id: 'sreality:1',
+            source: Source::SREALITY,
+            title: 'Byt',
+            price: 1,
+            dealType: DealType::SALE,
+            location: 'Praha',
+            url: 'https://example.test/1',
+            rawText: 'text',
+            sellerMeta: new SellerMeta(
+                hasPremise: false,
+                totalListingCount: null,
+                name: 'Jan',
+                email: 'jan@example.cz',
+            ),
+            structuredPhones: [],
+        );
+
+        $message = (new MessageFormatter())->format(
+            $listing,
+            new Verdict(Classification::OWNER, Confidence::HIGH, ['x']),
+            [],
+        );
+
+        self::assertStringContainsString('jan@example.cz', $message);
+        self::assertStringContainsString('📧', $message);
+    }
+
+    public function testOmitsEmailLineWhenSellerMetaHasNoEmail(): void
+    {
+        $message = (new MessageFormatter())->format(
+            $this->listing(),
+            new Verdict(Classification::OWNER, Confidence::HIGH, ['x']),
+            [new DetectedPhone('+420777123456', '777 123 456', PhoneOrigin::TEXT, null)],
+        );
+
+        self::assertStringNotContainsString('📧', $message);
     }
 }
