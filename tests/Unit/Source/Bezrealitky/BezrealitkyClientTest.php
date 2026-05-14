@@ -37,6 +37,7 @@ final class BezrealitkyClientTest extends TestCase
         self::assertStringContainsString('608 444 111', $listings[0]->rawText);
         self::assertStringContainsString('bezrealitky.cz', $listings[0]->url);
         self::assertNull($listings[0]->sellerMeta);
+        self::assertSame([], $listings[0]->structuredPhones);
     }
 
     public function testHydrateIsIdentity(): void
@@ -47,5 +48,13 @@ final class BezrealitkyClientTest extends TestCase
         $listing = $client->fetchRecentListings()[0];
 
         self::assertSame($listing, $client->hydrate($listing));
+    }
+
+    public function testMalformedGraphQlResponseYieldsEmptyList(): void
+    {
+        $http = new MockHttpClient([new MockResponse('{"data":null}')]);
+        $client = new BezrealitkyClient($http, new NullLogger(), 'praha', 'sale,rent');
+
+        self::assertSame([], $client->fetchRecentListings());
     }
 }
