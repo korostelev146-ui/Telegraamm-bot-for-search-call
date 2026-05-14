@@ -2,5 +2,9 @@ parameters:
     level: 10
     paths:
         - src
-    symfony:
-        containerXmlPath: var/cache/dev/App_KernelDevDebugContainer.xml
+    # Symfony container analysis (containerXmlPath) is intentionally omitted while
+    # the project is being built task-by-task: warming the dev container fails
+    # until every class referenced in config/services.yaml exists. Re-add
+    #   symfony:
+    #       containerXmlPath: var/cache/dev/App_KernelDevDebugContainer.xml
+    # once the application is complete (after Task 12).
