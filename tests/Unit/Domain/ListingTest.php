@@ -68,4 +68,45 @@ final class ListingTest extends TestCase
         self::assertSame(PhoneOrigin::TEXT, $phone->origin);
         self::assertSame('volejte', $phone->marker);
     }
+
+    public function testWithDetailsReplacesDetailFieldsAndPreservesIdentity(): void
+    {
+        $original = new Listing(
+            id: 'sreality:123456789',
+            source: Source::SREALITY,
+            title: 'Prodej bytu 2+1',
+            price: 5_000_000,
+            dealType: DealType::SALE,
+            location: 'Praha 2 - Vinohrady',
+            url: 'https://www.sreality.cz/detail/123456789',
+            rawText: 'Volejte na 777 111 111',
+            sellerMeta: new SellerMeta(hasPremise: true, totalListingCount: 5, name: 'Old Name'),
+            structuredPhones: ['+420111111111'],
+        );
+
+        $updated = $original->withDetails(
+            'NEW raw text',
+            new SellerMeta(hasPremise: true, totalListingCount: 9, name: 'New Name'),
+            ['+420222222222'],
+        );
+
+        // Assert detail fields are replaced
+        self::assertSame('NEW raw text', $updated->rawText);
+        self::assertSame(true, $updated->sellerMeta?->hasPremise);
+        self::assertSame(9, $updated->sellerMeta?->totalListingCount);
+        self::assertSame('New Name', $updated->sellerMeta?->name);
+        self::assertSame(['+420222222222'], $updated->structuredPhones);
+
+        // Assert identity fields are preserved
+        self::assertSame('sreality:123456789', $updated->id);
+        self::assertSame(Source::SREALITY, $updated->source);
+        self::assertSame('Prodej bytu 2+1', $updated->title);
+        self::assertSame(5_000_000, $updated->price);
+        self::assertSame(DealType::SALE, $updated->dealType);
+        self::assertSame('Praha 2 - Vinohrady', $updated->location);
+        self::assertSame('https://www.sreality.cz/detail/123456789', $updated->url);
+
+        // Assert immutability
+        self::assertNotSame($original, $updated);
+    }
 }
