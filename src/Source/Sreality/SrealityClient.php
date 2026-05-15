@@ -34,9 +34,12 @@ final class SrealityClient implements ListingSource
     ];
 
     /**
-     * Sreality category_main_cb for apartments.
+     * Sreality category_main_cb codes for the building kinds we monitor.
      */
-    private const APARTMENT_CATEGORY = 1;
+    private const ESTATE_TYPE_CODES = [
+        'apartment' => 1, // byt
+        'house' => 2,     // dum
+    ];
 
     /**
      * Sreality category_type_cb codes.
@@ -74,6 +77,7 @@ final class SrealityClient implements ListingSource
     ];
 
     private const SUB_CB_SLUGS = [
+        // Apartments (category_main_cb = 1).
         2 => '1+kk',
         3 => '1+1',
         4 => '2+kk',
@@ -87,6 +91,13 @@ final class SrealityClient implements ListingSource
         12 => '6-a-vice',
         16 => 'atypicky',
         47 => 'pokoj',
+        // Houses (category_main_cb = 2). The canonical slugs are short forms;
+        // Sreality 301-redirects a wrong-but-recognised token to the right one,
+        // so the `1+kk` apartment fallback also resolves for unmapped houses.
+        33 => 'chata',
+        37 => 'rodinny',
+        39 => 'vila',
+        54 => 'vicegeneracni',
     ];
 
     /**
@@ -103,6 +114,7 @@ final class SrealityClient implements ListingSource
         private readonly LoggerInterface $logger,
         private readonly string $monitorRegion,
         private readonly string $monitorDealTypes,
+        private readonly string $monitorEstateTypes = 'apartment',
     ) {
     }
 
@@ -110,44 +122,46 @@ final class SrealityClient implements ListingSource
     {
         $regionId = self::REGION_IDS[$this->monitorRegion] ?? self::REGION_IDS['praha'];
 
-        foreach ($this->dealTypes() as $dealType) {
-            $page = 1;
-            while (true) {
-                $query = http_build_query([
-                    'category_main_cb' => self::APARTMENT_CATEGORY,
-                    'category_type_cb' => self::DEAL_TYPE_CODES[$dealType->value],
-                    'locality_region_id' => $regionId,
-                    'per_page' => self::PER_PAGE,
-                    'page' => $page,
-                    'sort' => 'date',
-                ]);
+        foreach ($this->estateCategories() as $estateCategory) {
+            foreach ($this->dealTypes() as $dealType) {
+                $page = 1;
+                while (true) {
+                    $query = http_build_query([
+                        'category_main_cb' => $estateCategory,
+                        'category_type_cb' => self::DEAL_TYPE_CODES[$dealType->value],
+                        'locality_region_id' => $regionId,
+                        'per_page' => self::PER_PAGE,
+                        'page' => $page,
+                        'sort' => 'date',
+                    ]);
 
-                $this->logger->info('Sreality list request', [
-                    'query' => $query,
-                ]);
+                    $this->logger->info('Sreality list request', [
+                        'query' => $query,
+                    ]);
 
-                $data = $this->httpClient
-                    ->request('GET', self::LIST_URL . '?' . $query, $this->options())
-                    ->toArray();
+                    $data = $this->httpClient
+                        ->request('GET', self::LIST_URL . '?' . $query, $this->options())
+                        ->toArray();
 
-                $embedded = is_array($data['_embedded'] ?? null) ? $data['_embedded'] : [];
-                $estates = is_array($embedded['estates'] ?? null) ? $embedded['estates'] : [];
+                    $embedded = is_array($data['_embedded'] ?? null) ? $data['_embedded'] : [];
+                    $estates = is_array($embedded['estates'] ?? null) ? $embedded['estates'] : [];
 
-                if ($estates === []) {
-                    break;
-                }
-
-                foreach ($estates as $estate) {
-                    if (is_array($estate)) {
-                        yield $this->mapShallow($estate, $dealType);
+                    if ($estates === []) {
+                        break;
                     }
-                }
 
-                if (count($estates) < self::PER_PAGE) {
-                    break; // short page → no more results
-                }
+                    foreach ($estates as $estate) {
+                        if (is_array($estate)) {
+                            yield $this->mapShallow($estate, $dealType);
+                        }
+                    }
 
-                ++$page;
+                    if (count($estates) < self::PER_PAGE) {
+                        break; // short page → no more results
+                    }
+
+                    ++$page;
+                }
             }
         }
     }
@@ -212,6 +226,22 @@ final class SrealityClient implements ListingSource
         }
 
         return $types === [] ? [DealType::SALE] : $types;
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function estateCategories(): array
+    {
+        $codes = [];
+        foreach (explode(',', $this->monitorEstateTypes) as $raw) {
+            $code = self::ESTATE_TYPE_CODES[trim($raw)] ?? null;
+            if ($code !== null) {
+                $codes[] = $code;
+            }
+        }
+
+        return $codes === [] ? [self::ESTATE_TYPE_CODES['apartment']] : $codes;
     }
 
     /**

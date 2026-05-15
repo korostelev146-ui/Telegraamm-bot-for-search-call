@@ -224,4 +224,60 @@ final class SrealityClientTest extends TestCase
         self::assertNotNull($first);
         self::assertSame('sreality:111', $first->id);
     }
+
+    public function testFetchRecentListingsIteratesOverEveryConfiguredEstateType(): void
+    {
+        // With 'apartment,house' the client must paginate each category_main_cb
+        // separately. Capture the request URLs and confirm both `=1` and `=2`
+        // are visited, each as a short page.
+        $captured = [];
+        $http = new MockHttpClient(
+            function (string $method, string $url) use (&$captured): MockResponse {
+                $captured[] = $url;
+
+                return new MockResponse($this->fixture('sreality_list.json'));
+            },
+        );
+        $client = new SrealityClient($http, new NullLogger(), 'praha', 'sale', 'apartment,house');
+
+        $count = count(iterator_to_array($client->fetchRecentListings(), false));
+
+        self::assertCount(2, $captured, 'one short page per estate type ⇒ two requests');
+        self::assertStringContainsString('category_main_cb=1', $captured[0]);
+        self::assertStringContainsString('category_main_cb=2', $captured[1]);
+        self::assertSame(4, $count, 'fixture has 2 estates × 2 estate-type iterations');
+    }
+
+    public function testFetchRecentListingsBuildsHouseDetailUrlWithCanonicalSlug(): void
+    {
+        // A category_main_cb=2 (dum) listing with sub_cb=37 must produce the
+        // canonical /detail/prodej/dum/rodinny/{locality}/{hash} URL.
+        $json = json_encode([
+            '_embedded' => [
+                'estates' => [[
+                    'hash_id' => 7777,
+                    'name' => 'Prodej rodinneho domu',
+                    'locality' => 'Praha - Dejvice',
+                    'price' => 25_000_000,
+                    'seo' => [
+                        'category_main_cb' => 2,
+                        'category_sub_cb' => 37,
+                        'category_type_cb' => 1,
+                        'locality' => 'praha-dejvice',
+                    ],
+                ]],
+            ],
+        ]);
+        self::assertIsString($json);
+
+        $http = new MockHttpClient([new MockResponse($json)]);
+        $client = new SrealityClient($http, new NullLogger(), 'praha', 'sale', 'house');
+
+        $listings = iterator_to_array($client->fetchRecentListings(), false);
+
+        self::assertSame(
+            'https://www.sreality.cz/detail/prodej/dum/rodinny/praha-dejvice/7777',
+            $listings[0]->url,
+        );
+    }
 }

@@ -106,4 +106,51 @@ final class BezrealitkyClientTest extends TestCase
 
         self::assertCount(2, iterator_to_array($client->fetchRecentListings(), false));
     }
+
+    public function testFetchRecentListingsLoopsOverEveryConfiguredRegion(): void
+    {
+        // Two regions configured ⇒ two GraphQL calls (each a short page).
+        $regionPage = json_encode(['data' => ['listAdverts' => ['totalCount' => 1, 'list' => [[
+            'id' => '1',
+            'uri' => 'one',
+            'title' => 'One',
+            'address' => 'X',
+            'price' => 1,
+            'offerType' => 'PRODEJ',
+            'description' => 'x',
+        ]]]]]);
+        self::assertIsString($regionPage);
+
+        $http = new MockHttpClient([new MockResponse($regionPage), new MockResponse($regionPage)]);
+        $client = new BezrealitkyClient($http, new NullLogger(), 'praha,stredocesky', 'sale');
+
+        // One listing yielded per region — two in total.
+        self::assertCount(2, iterator_to_array($client->fetchRecentListings(), false));
+    }
+
+    public function testFetchRecentListingsPassesEstateTypeArrayToGraphQl(): void
+    {
+        // Capture the JSON body sent to the API and confirm both BYT and DUM
+        // travel together in one estateType array, not as two separate calls.
+        $captured = [];
+        $regionPage = json_encode(['data' => ['listAdverts' => ['totalCount' => 0, 'list' => []]]]);
+        self::assertIsString($regionPage);
+
+        $http = new MockHttpClient(function (string $method, string $url, array $options) use (&$captured, $regionPage) {
+            $body = is_string($options['body'] ?? null) ? $options['body'] : '';
+            $captured[] = $body;
+
+            return new MockResponse($regionPage);
+        });
+        $client = new BezrealitkyClient($http, new NullLogger(), 'praha', 'sale,rent', 'apartment,house');
+
+        iterator_to_array($client->fetchRecentListings(), false);
+
+        self::assertCount(1, $captured, 'one region ⇒ exactly one GraphQL call');
+        $decoded = json_decode($captured[0], true);
+        self::assertIsArray($decoded);
+        self::assertIsArray($decoded['variables'] ?? null);
+        self::assertSame(['BYT', 'DUM'], $decoded['variables']['estateType']);
+        self::assertSame(['PRODEJ', 'PRONAJEM'], $decoded['variables']['offerType']);
+    }
 }

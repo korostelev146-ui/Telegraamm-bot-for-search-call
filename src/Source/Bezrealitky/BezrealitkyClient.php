@@ -25,15 +25,25 @@ final class BezrealitkyClient implements ListingSource
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
     /**
-     * Bezrealitky internal region id for Prague (from the reference project's verified mapping).
+     * Bezrealitky internal region ids (verified via the `czechRegions` GraphQL
+     * query). Each value is the numeric id Bezrealitky uses as `regionId`.
      */
     private const REGION_IDS = [
         'praha' => '486',
+        'stredocesky' => '490',
     ];
 
     private const DEAL_TYPE_CODES = [
         'sale' => 'PRODEJ',
         'rent' => 'PRONAJEM',
+    ];
+
+    /**
+     * Bezrealitky `EstateType` enum values for the building kinds we monitor.
+     */
+    private const ESTATE_TYPE_CODES = [
+        'apartment' => 'BYT',
+        'house' => 'DUM',
     ];
 
     /**
@@ -43,8 +53,8 @@ final class BezrealitkyClient implements ListingSource
     private const PER_PAGE = 100;
 
     private const QUERY = <<<'GQL'
-        query AdvertList($offerType: [OfferType], $regionId: ID, $limit: Int, $offset: Int, $order: ResultOrder) {
-            listAdverts(offerType: $offerType, estateType: [BYT], regionId: $regionId, limit: $limit, offset: $offset, order: $order) {
+        query AdvertList($offerType: [OfferType], $estateType: [EstateType], $regionId: ID, $limit: Int, $offset: Int, $order: ResultOrder) {
+            listAdverts(offerType: $offerType, estateType: $estateType, regionId: $regionId, limit: $limit, offset: $offset, order: $order) {
                 totalCount
                 list {
                     id
@@ -62,62 +72,66 @@ final class BezrealitkyClient implements ListingSource
     public function __construct(
         private readonly HttpClientInterface $httpClient,
         private readonly LoggerInterface $logger,
-        private readonly string $monitorRegion,
+        private readonly string $monitorBezrealitkyRegions,
         private readonly string $monitorDealTypes,
+        private readonly string $monitorEstateTypes = 'apartment',
     ) {
     }
 
     public function fetchRecentListings(): iterable
     {
-        $regionId = self::REGION_IDS[$this->monitorRegion] ?? self::REGION_IDS['praha'];
         $offerTypes = $this->offerTypes();
+        $estateTypes = $this->estateTypes();
 
-        $offset = 0;
-        while (true) {
-            $variables = [
-                'offerType' => $offerTypes,
-                'regionId' => $regionId,
-                'limit' => self::PER_PAGE,
-                'offset' => $offset,
-                'order' => 'TIMEORDER_DESC',
-            ];
+        foreach ($this->regionIds() as $regionId) {
+            $offset = 0;
+            while (true) {
+                $variables = [
+                    'offerType' => $offerTypes,
+                    'estateType' => $estateTypes,
+                    'regionId' => $regionId,
+                    'limit' => self::PER_PAGE,
+                    'offset' => $offset,
+                    'order' => 'TIMEORDER_DESC',
+                ];
 
-            $this->logger->info('Bezrealitky GraphQL request', [
-                'variables' => $variables,
-            ]);
-
-            $data = $this->httpClient->request('POST', self::GRAPHQL_URL, [
-                'headers' => [
-                    'Content-Type' => 'application/json',
-                    'Accept' => 'application/json',
-                    'User-Agent' => self::USER_AGENT,
-                ],
-                'json' => [
-                    'query' => self::QUERY,
-                    'operationName' => 'AdvertList',
+                $this->logger->info('Bezrealitky GraphQL request', [
                     'variables' => $variables,
-                ],
-            ])->toArray();
+                ]);
 
-            $dataSection = is_array($data['data'] ?? null) ? $data['data'] : [];
-            $listAdverts = is_array($dataSection['listAdverts'] ?? null) ? $dataSection['listAdverts'] : [];
-            $rawList = is_array($listAdverts['list'] ?? null) ? $listAdverts['list'] : [];
+                $data = $this->httpClient->request('POST', self::GRAPHQL_URL, [
+                    'headers' => [
+                        'Content-Type' => 'application/json',
+                        'Accept' => 'application/json',
+                        'User-Agent' => self::USER_AGENT,
+                    ],
+                    'json' => [
+                        'query' => self::QUERY,
+                        'operationName' => 'AdvertList',
+                        'variables' => $variables,
+                    ],
+                ])->toArray();
 
-            if ($rawList === []) {
-                break;
-            }
+                $dataSection = is_array($data['data'] ?? null) ? $data['data'] : [];
+                $listAdverts = is_array($dataSection['listAdverts'] ?? null) ? $dataSection['listAdverts'] : [];
+                $rawList = is_array($listAdverts['list'] ?? null) ? $listAdverts['list'] : [];
 
-            foreach ($rawList as $item) {
-                if (is_array($item)) {
-                    yield $this->map($item);
+                if ($rawList === []) {
+                    break;
                 }
-            }
 
-            if (count($rawList) < self::PER_PAGE) {
-                break; // short page → no more results
-            }
+                foreach ($rawList as $item) {
+                    if (is_array($item)) {
+                        yield $this->map($item);
+                    }
+                }
 
-            $offset += self::PER_PAGE;
+                if (count($rawList) < self::PER_PAGE) {
+                    break; // short page → no more results for this region
+                }
+
+                $offset += self::PER_PAGE;
+            }
         }
     }
 
@@ -140,6 +154,38 @@ final class BezrealitkyClient implements ListingSource
         }
 
         return $codes === [] ? [self::DEAL_TYPE_CODES['sale']] : $codes;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function estateTypes(): array
+    {
+        $codes = [];
+        foreach (explode(',', $this->monitorEstateTypes) as $raw) {
+            $code = self::ESTATE_TYPE_CODES[trim($raw)] ?? null;
+            if ($code !== null) {
+                $codes[] = $code;
+            }
+        }
+
+        return $codes === [] ? [self::ESTATE_TYPE_CODES['apartment']] : $codes;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function regionIds(): array
+    {
+        $ids = [];
+        foreach (explode(',', $this->monitorBezrealitkyRegions) as $raw) {
+            $id = self::REGION_IDS[trim($raw)] ?? null;
+            if ($id !== null) {
+                $ids[] = $id;
+            }
+        }
+
+        return $ids === [] ? [self::REGION_IDS['praha']] : $ids;
     }
 
     /**

@@ -9,7 +9,9 @@ services:
             $telegramChatId: '%env(TELEGRAM_CHAT_ID)%'
             $databasePath: '%env(resolve:DATABASE_PATH)%'
             $monitorRegion: '%env(MONITOR_REGION)%'
+            $monitorBezrealitkyRegions: '%env(MONITOR_BEZREALITKY_REGIONS)%'
             $monitorDealTypes: '%env(MONITOR_DEAL_TYPES)%'
+            $monitorEstateTypes: '%env(MONITOR_ESTATE_TYPES)%'
             $batchLimit: '%env(int:MONITOR_BATCH_LIMIT)%'
 
     _instanceof:
