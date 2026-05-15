@@ -287,4 +287,26 @@ final class MonitorRunnerTest extends TestCase
 
         self::assertCount(1, $this->sentMessages, 'Listing retried and sent after notifier recovers');
     }
+
+    public function testSendsUnknownListingWithEmailButNoPhone(): void
+    {
+        // Neutral text — classification falls through to UNKNOWN. No phone, but
+        // a Sreality-style contact e-mail — must be sent under the unified gate.
+        $runner = $this->runner($this->source([
+            $this->listing(
+                'sreality:1',
+                'Pekny byt v centru.',
+                new SellerMeta(
+                    hasPremise: false,
+                    totalListingCount: null,
+                    name: 'Jan',
+                    email: 'jan@example.cz',
+                ),
+            ),
+        ]));
+
+        $runner->run();
+
+        self::assertCount(1, $this->sentMessages);
+    }
 }

@@ -106,21 +106,19 @@ final class MonitorRunner
             return false;
         }
 
-        // A phone-less listing is only a lead when it's a confirmed owner that
-        // still carries a contact e-mail. Everything else without a phone — an
-        // UNKNOWN seller, or an owner with no contact at all (e.g. a link-only
-        // Bezrealitky listing) — has nothing actionable to send.
-        if ($phones === []) {
-            $sellerMeta = $listing->sellerMeta;
-            $hasEmail = $sellerMeta !== null
-                && $sellerMeta->email !== null
-                && $sellerMeta->email !== '';
+        // Uniform rule: drop only when there is nothing actionable to send.
+        // A phone or an e-mail counts as a contact; without either there is no
+        // lead, regardless of whether the classifier called this OWNER or
+        // UNKNOWN. (REALTOR was already filtered above.)
+        $sellerMeta = $listing->sellerMeta;
+        $hasEmail = $sellerMeta !== null
+            && $sellerMeta->email !== null
+            && $sellerMeta->email !== '';
 
-            if ($verdict->classification !== Classification::OWNER || ! $hasEmail) {
-                $this->seenStore->markSeen($listing->id, $listing->source);
+        if ($phones === [] && ! $hasEmail) {
+            $this->seenStore->markSeen($listing->id, $listing->source);
 
-                return false;
-            }
+            return false;
         }
 
         if ($isFirstRun && $sentThisSource >= $this->firstRunLimit) {
