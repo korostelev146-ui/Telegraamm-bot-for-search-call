@@ -198,4 +198,34 @@ final class PhoneDetectorTest extends TestCase
         $text = 'sedm sedm sedm 7 jedna dva tri ctyri pet sest';
         self::assertSame([], (new PhoneDetector())->detect($this->listing($text)));
     }
+
+    public function testExtractsPhoneWrittenWithKeycapEmojiDigits(): void
+    {
+        // Bezrealitky owners sometimes write each digit as a keycap emoji
+        // (e.g. "7️⃣7️⃣7️⃣ 1️⃣2️⃣3️⃣ 4️⃣5️⃣6️⃣") to dodge naive text scrapers.
+        // Each keycap is the ASCII digit followed by U+FE0F (variation
+        // selector) + U+20E3 (combining keycap); stripping those two combining
+        // characters reveals the underlying digit run for the regex scanner.
+        $text = "Volejte 7\u{FE0F}\u{20E3}7\u{FE0F}\u{20E3}7\u{FE0F}\u{20E3} "
+            . "1\u{FE0F}\u{20E3}2\u{FE0F}\u{20E3}3\u{FE0F}\u{20E3} "
+            . "4\u{FE0F}\u{20E3}5\u{FE0F}\u{20E3}6\u{FE0F}\u{20E3}";
+        $phones = (new PhoneDetector())->detect($this->listing($text));
+
+        self::assertCount(1, $phones);
+        self::assertSame('+420777123456', $phones[0]->e164);
+        self::assertSame(PhoneOrigin::TEXT, $phones[0]->origin);
+    }
+
+    public function testExtractsKeycapEmojiPhoneWithoutVariationSelector(): void
+    {
+        // Some renderers omit the U+FE0F variation selector and write the
+        // keycap with just digit + U+20E3 (e.g. "7⃣7⃣7⃣..."). Stripping the
+        // combining keycap alone must still produce the underlying digits.
+        $text = "kontakt 7\u{20E3}7\u{20E3}7\u{20E3} 1\u{20E3}2\u{20E3}3\u{20E3} 4\u{20E3}5\u{20E3}6\u{20E3}";
+        $phones = (new PhoneDetector())->detect($this->listing($text));
+
+        self::assertCount(1, $phones);
+        self::assertSame('+420777123456', $phones[0]->e164);
+        self::assertSame('kontakt', $phones[0]->marker);
+    }
 }

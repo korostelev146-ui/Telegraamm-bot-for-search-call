@@ -77,12 +77,20 @@ final class PhoneDetector
             );
         }
 
-        foreach ($this->scanText($listing->rawText) as $detected) {
+        // Strip keycap-emoji modifiers (U+FE0F variation selector + U+20E3
+        // combining enclosing keycap) so a digit run written as
+        // "7️⃣7️⃣7️⃣ 1️⃣2️⃣3️⃣ 4️⃣5️⃣6️⃣" collapses back to plain "777 123 456"
+        // before the scanners run. Bezrealitky owners use this trick to dodge
+        // naive text scrapers; the regex scanner picks the normalised digits
+        // up exactly as it would a regular number.
+        $text = str_replace(["\u{FE0F}", "\u{20E3}"], '', $listing->rawText);
+
+        foreach ($this->scanText($text) as $detected) {
             // Structured numbers win — keep the already-stored one if present.
             $byE164[$detected->e164] ??= $detected;
         }
 
-        foreach ($this->scanWordDigits($listing->rawText) as $detected) {
+        foreach ($this->scanWordDigits($text) as $detected) {
             // Digit-runs and structured numbers both win over word-digit runs.
             $byE164[$detected->e164] ??= $detected;
         }
