@@ -9,12 +9,13 @@ use App\Domain\Listing;
 interface ListingSource
 {
     /**
-     * Cheap call: returns shallow listings (rawText/sellerMeta/structuredPhones may be empty).
-     * Implementations MUST return listings ordered newest-first; the first-run cap relies on this ordering.
+     * Cheap call: yields shallow listings (rawText/sellerMeta/structuredPhones may be empty).
+     * Implementations MUST yield listings ordered newest-first; pagination is lazy so a
+     * consumer that breaks out of the foreach early skips the unfetched pages.
      *
-     * @return list<Listing>
+     * @return iterable<Listing>
      */
-    public function fetchRecentListings(): array;
+    public function fetchRecentListings(): iterable;
 
     /**
      * Fills rawText, sellerMeta and structuredPhones. May perform an HTTP call.

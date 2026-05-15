@@ -27,14 +27,13 @@ final class SrealityClientTest extends TestCase
         $http = new MockHttpClient([new MockResponse($this->fixture('sreality_list.json'))]);
         $client = new SrealityClient($http, new NullLogger(), 'praha', 'sale');
 
-        $listings = $client->fetchRecentListings();
+        $listings = iterator_to_array($client->fetchRecentListings(), false);
 
         self::assertCount(2, $listings);
         self::assertSame('sreality:111', $listings[0]->id);
         self::assertSame(Source::SREALITY, $listings[0]->source);
         self::assertSame(DealType::SALE, $listings[0]->dealType);
         self::assertSame('Praha 7 - Holesovice', $listings[0]->location);
-        // The public detail URL needs the full SEO path; a bare /detail/{id} 404s.
         self::assertSame(
             'https://www.sreality.cz/detail/prodej/byt/2+kk/praha-7-holesovice/111',
             $listings[0]->url,
@@ -52,10 +51,8 @@ final class SrealityClientTest extends TestCase
         )]);
         $client = new SrealityClient($http, new NullLogger(), 'praha', 'rent');
 
-        $listings = $client->fetchRecentListings();
+        $listings = iterator_to_array($client->fetchRecentListings(), false);
 
-        // No SEO block — fall back to deal-type-derived path with valid slug
-        // tokens; Sreality 301-redirects a non-canonical path to the real page.
         self::assertSame(
             'https://www.sreality.cz/detail/pronajem/byt/1+kk/praha/333',
             $listings[0]->url,
@@ -64,13 +61,15 @@ final class SrealityClientTest extends TestCase
 
     public function testFetchRecentListingsCombinesSaleAndRent(): void
     {
+        // For each deal type the client paginates until a short/empty page;
+        // a one-item page counts as "short" and ends pagination for that type.
         $http = new MockHttpClient([
             new MockResponse($this->fixture('sreality_list.json')),
             new MockResponse($this->fixture('sreality_list.json')),
         ]);
         $client = new SrealityClient($http, new NullLogger(), 'praha', 'sale,rent');
 
-        self::assertCount(4, $client->fetchRecentListings());
+        self::assertCount(4, iterator_to_array($client->fetchRecentListings(), false));
     }
 
     public function testHydratePrivateListingReadsTextAndContactFallback(): void
@@ -81,7 +80,7 @@ final class SrealityClientTest extends TestCase
         ]);
         $client = new SrealityClient($http, new NullLogger(), 'praha', 'sale');
 
-        $shallow = $client->fetchRecentListings()[0];
+        $shallow = iterator_to_array($client->fetchRecentListings(), false)[0];
         $hydrated = $client->hydrate($shallow);
 
         // text is a {name, value} object — value must reach rawText.
@@ -104,7 +103,7 @@ final class SrealityClientTest extends TestCase
         ]);
         $client = new SrealityClient($http, new NullLogger(), 'praha', 'sale');
 
-        $shallow = $client->fetchRecentListings()[0];
+        $shallow = iterator_to_array($client->fetchRecentListings(), false)[0];
         $hydrated = $client->hydrate($shallow);
 
         self::assertStringContainsString('Bakers Court', $hydrated->rawText);
@@ -123,11 +122,106 @@ final class SrealityClientTest extends TestCase
         ]);
         $client = new SrealityClient($http, new NullLogger(), 'praha', 'sale');
 
-        $shallow = $client->fetchRecentListings()[0];
+        $shallow = iterator_to_array($client->fetchRecentListings(), false)[0];
         $hydrated = $client->hydrate($shallow);
 
         self::assertSame('', $hydrated->rawText);
         self::assertNull($hydrated->sellerMeta);
         self::assertSame([], $hydrated->structuredPhones);
+    }
+
+    public function testHydrateThrottlesBetweenDetailCalls(): void
+    {
+        // Two list + two details = one back-to-back detail-call pair. The
+        // second hydrate must wait at least THROTTLE_USEC microseconds after
+        // the first; 350 ms is the production value (see SrealityClient).
+        $http = new MockHttpClient([
+            new MockResponse($this->fixture('sreality_list.json')),
+            new MockResponse($this->fixture('sreality_detail_private.json')),
+            new MockResponse($this->fixture('sreality_detail_agency.json')),
+        ]);
+        $client = new SrealityClient($http, new NullLogger(), 'praha', 'sale');
+
+        $shallow = iterator_to_array($client->fetchRecentListings(), false);
+        $start = hrtime(true);
+        $client->hydrate($shallow[0]);
+        $client->hydrate($shallow[1]);
+        $elapsedUs = (int) ((hrtime(true) - $start) / 1000);
+
+        // First call has no throttle; second call must wait the full window.
+        // Allow the 300 ms floor — the production value is 350 ms.
+        self::assertGreaterThanOrEqual(300_000, $elapsedUs);
+    }
+
+    public function testFetchRecentListingsPaginatesAcrossPages(): void
+    {
+        // Page 1 returns 100 listings (a full page → keep paginating), page 2
+        // returns 1 listing (a short page → stop). The client must yield all 101.
+        $page1 = json_encode([
+            '_embedded' => [
+                'estates' => array_map(
+                    static fn (int $i) => [
+                        'hash_id' => 1000 + $i,
+                        'name' => 'Prodej bytu',
+                        'locality' => 'Praha',
+                        'price' => 1,
+                        'seo' => [
+                            'category_main_cb' => 1,
+                            'category_sub_cb' => 4,
+                            'category_type_cb' => 1,
+                            'locality' => 'praha',
+                        ],
+                    ],
+                    range(1, 100),
+                ),
+            ],
+        ]);
+        $page2 = json_encode([
+            '_embedded' => [
+                'estates' => [[
+                    'hash_id' => 9999,
+                    'name' => 'Prodej bytu',
+                    'locality' => 'Praha',
+                    'price' => 1,
+                    'seo' => [
+                        'category_main_cb' => 1,
+                        'category_sub_cb' => 4,
+                        'category_type_cb' => 1,
+                        'locality' => 'praha',
+                    ],
+                ]],
+            ],
+        ]);
+        self::assertIsString($page1);
+        self::assertIsString($page2);
+
+        $http = new MockHttpClient([new MockResponse($page1), new MockResponse($page2)]);
+        $client = new SrealityClient($http, new NullLogger(), 'praha', 'sale');
+
+        $ids = [];
+        foreach ($client->fetchRecentListings() as $listing) {
+            $ids[] = $listing->id;
+        }
+
+        self::assertCount(101, $ids);
+        self::assertSame('sreality:1001', $ids[0]);
+        self::assertSame('sreality:9999', $ids[100]);
+    }
+
+    public function testFetchRecentListingsStopsEarlyWhenConsumerBreaks(): void
+    {
+        // Only the first page response is queued — the test will fail with
+        // "no more responses" if the client tries to fetch page 2.
+        $http = new MockHttpClient([new MockResponse($this->fixture('sreality_list.json'))]);
+        $client = new SrealityClient($http, new NullLogger(), 'praha', 'sale');
+
+        $first = null;
+        foreach ($client->fetchRecentListings() as $listing) {
+            $first = $listing;
+            break;
+        }
+
+        self::assertNotNull($first);
+        self::assertSame('sreality:111', $first->id);
     }
 }

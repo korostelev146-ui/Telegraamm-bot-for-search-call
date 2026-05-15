@@ -47,6 +47,12 @@ final class SrealityClient implements ListingSource
     ];
 
     /**
+     * `per_page` is honoured by Sreality up to 100 (verified empirically); a
+     * "short" page (strictly fewer items than this) marks the last page.
+     */
+    private const PER_PAGE = 100;
+
+    /**
      * Public-URL path slugs for the SEO category codes. The detail page lives at
      * /detail/{type}/{main}/{sub}/{locality}/{hash_id} — a bare /detail/{hash_id}
      * 404s. A non-canonical (but recognised) disposition slug still resolves:
@@ -83,6 +89,15 @@ final class SrealityClient implements ListingSource
         47 => 'pokoj',
     ];
 
+    /**
+     * Minimum gap between detail-endpoint calls, in microseconds. A full scan
+     * fires hundreds of detail requests; pacing them ~350 ms apart keeps the
+     * request rate within what a real browser would produce.
+     */
+    private const THROTTLE_USEC = 350_000;
+
+    private int $lastDetailCallAt = 0;
+
     public function __construct(
         private readonly HttpClientInterface $httpClient,
         private readonly LoggerInterface $logger,
@@ -91,39 +106,50 @@ final class SrealityClient implements ListingSource
     ) {
     }
 
-    public function fetchRecentListings(): array
+    public function fetchRecentListings(): iterable
     {
         $regionId = self::REGION_IDS[$this->monitorRegion] ?? self::REGION_IDS['praha'];
-        $listings = [];
 
         foreach ($this->dealTypes() as $dealType) {
-            $query = http_build_query([
-                'category_main_cb' => self::APARTMENT_CATEGORY,
-                'category_type_cb' => self::DEAL_TYPE_CODES[$dealType->value],
-                'locality_region_id' => $regionId,
-                'per_page' => 60,
-                'sort' => 'date',
-            ]);
+            $page = 1;
+            while (true) {
+                $query = http_build_query([
+                    'category_main_cb' => self::APARTMENT_CATEGORY,
+                    'category_type_cb' => self::DEAL_TYPE_CODES[$dealType->value],
+                    'locality_region_id' => $regionId,
+                    'per_page' => self::PER_PAGE,
+                    'page' => $page,
+                    'sort' => 'date',
+                ]);
 
-            $this->logger->info('Sreality list request', [
-                'query' => $query,
-            ]);
+                $this->logger->info('Sreality list request', [
+                    'query' => $query,
+                ]);
 
-            $data = $this->httpClient
-                ->request('GET', self::LIST_URL . '?' . $query, $this->options())
-                ->toArray();
+                $data = $this->httpClient
+                    ->request('GET', self::LIST_URL . '?' . $query, $this->options())
+                    ->toArray();
 
-            $embedded = is_array($data['_embedded'] ?? null) ? $data['_embedded'] : [];
-            $estates = is_array($embedded['estates'] ?? null) ? $embedded['estates'] : [];
+                $embedded = is_array($data['_embedded'] ?? null) ? $data['_embedded'] : [];
+                $estates = is_array($embedded['estates'] ?? null) ? $embedded['estates'] : [];
 
-            foreach ($estates as $estate) {
-                if (is_array($estate)) {
-                    $listings[] = $this->mapShallow($estate, $dealType);
+                if ($estates === []) {
+                    break;
                 }
+
+                foreach ($estates as $estate) {
+                    if (is_array($estate)) {
+                        yield $this->mapShallow($estate, $dealType);
+                    }
+                }
+
+                if (count($estates) < self::PER_PAGE) {
+                    break; // short page → no more results
+                }
+
+                ++$page;
             }
         }
-
-        return $listings;
     }
 
     public function hydrate(Listing $listing): Listing
@@ -140,6 +166,8 @@ final class SrealityClient implements ListingSource
             'hash_id' => $hashId,
         ]);
 
+        $this->throttleDetailCall();
+
         $data = $this->httpClient
             ->request('GET', self::DETAIL_URL . $hashId, $this->options())
             ->toArray();
@@ -152,6 +180,22 @@ final class SrealityClient implements ListingSource
             sellerMeta: $seller['meta'],
             structuredPhones: $seller['phones'],
         );
+    }
+
+    /**
+     * Sleeps so that consecutive detail-endpoint calls are spaced at least
+     * THROTTLE_USEC apart. The very first call passes through with no wait.
+     */
+    private function throttleDetailCall(): void
+    {
+        if ($this->lastDetailCallAt !== 0) {
+            $elapsed = (int) (hrtime(true) / 1000) - $this->lastDetailCallAt;
+            if ($elapsed < self::THROTTLE_USEC) {
+                usleep(self::THROTTLE_USEC - $elapsed);
+            }
+        }
+
+        $this->lastDetailCallAt = (int) (hrtime(true) / 1000);
     }
 
     /**

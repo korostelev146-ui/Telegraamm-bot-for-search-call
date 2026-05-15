@@ -116,7 +116,7 @@ final class MonitorRunnerTest extends TestCase
             formatter: new MessageFormatter(),
             notifier: $notifier,
             logger: new NullLogger(),
-            firstRunLimit: 2,
+            batchLimit: 2,
         );
     }
 
@@ -140,7 +140,7 @@ final class MonitorRunnerTest extends TestCase
             formatter: new MessageFormatter(),
             notifier: $notifier,
             logger: new NullLogger(),
-            firstRunLimit: 2,
+            batchLimit: 2,
         );
     }
 
@@ -218,22 +218,25 @@ final class MonitorRunnerTest extends TestCase
         self::assertCount(0, $this->sentMessages);
     }
 
-    public function testFirstRunIsCappedByLimit(): void
+    public function testBatchLimitStopsRunAndLeavesRemainderForNextRun(): void
     {
+        $database = $this->makeDatabase();
         $listings = [
             $this->listing('sreality:1', 'Volejte 777 123 401, primo od majitele'),
             $this->listing('sreality:2', 'Volejte 777 123 402, primo od majitele'),
             $this->listing('sreality:3', 'Volejte 777 123 403, primo od majitele'),
             $this->listing('sreality:4', 'Volejte 777 123 404, primo od majitele'),
         ];
-        $runner = $this->runner($this->source($listings)); // firstRunLimit = 2
 
-        $runner->run();
+        // batchLimit = 2 → first run sends 2 and leaves the remaining 2 un-seen.
+        $first = $this->runnerOnDatabase($database, $this->source($listings));
+        $first->run();
+        self::assertCount(2, $this->sentMessages);
 
-        self::assertCount(2, $this->sentMessages);
-        // All four are marked seen, so a second run sends nothing.
-        $runner->run();
-        self::assertCount(2, $this->sentMessages);
+        // Same four listings the next run — the two un-seen ones are processed.
+        $second = $this->runnerOnDatabase($database, $this->source($listings));
+        $second->run();
+        self::assertCount(4, $this->sentMessages);
     }
 
     public function testOneSourceFailingDoesNotStopOthers(): void
@@ -286,5 +289,27 @@ final class MonitorRunnerTest extends TestCase
         $secondRunner->run();
 
         self::assertCount(1, $this->sentMessages, 'Listing retried and sent after notifier recovers');
+    }
+
+    public function testSendsUnknownListingWithEmailButNoPhone(): void
+    {
+        // Neutral text — classification falls through to UNKNOWN. No phone, but
+        // a Sreality-style contact e-mail — must be sent under the unified gate.
+        $runner = $this->runner($this->source([
+            $this->listing(
+                'sreality:1',
+                'Pekny byt v centru.',
+                new SellerMeta(
+                    hasPremise: false,
+                    totalListingCount: null,
+                    name: 'Jan',
+                    email: 'jan@example.cz',
+                ),
+            ),
+        ]));
+
+        $runner->run();
+
+        self::assertCount(1, $this->sentMessages);
     }
 }

@@ -39,7 +39,7 @@ final class MonitorCommandTest extends TestCase
             formatter: new MessageFormatter(),
             notifier: $notifier,
             logger: new NullLogger(),
-            firstRunLimit: 15,
+            batchLimit: 15,
         );
 
         $command = new MonitorCommand($database, $runner);
