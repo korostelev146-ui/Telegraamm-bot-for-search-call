@@ -33,6 +33,35 @@ final class PhoneDetector
     ];
 
     /**
+     * Czech spelling of digits 0-9, including the most common variants and
+     * diacritic forms an owner would actually type when obfuscating a number.
+     * The keys are matched against the lowercased description, so all entries
+     * are lowercase.
+     */
+    private const DIGIT_WORDS = [
+        'nula' => 0,
+        'jedna' => 1,
+        'jeden' => 1,
+        'jedno' => 1,
+        'jednu' => 1,
+        'dva' => 2,
+        'dve' => 2,
+        'dvě' => 2,
+        'tri' => 3,
+        'tři' => 3,
+        'ctyri' => 4,
+        'čtyři' => 4,
+        'pet' => 5,
+        'pět' => 5,
+        'sest' => 6,
+        'šest' => 6,
+        'sedm' => 7,
+        'osm' => 8,
+        'devet' => 9,
+        'devět' => 9,
+    ];
+
+    /**
      * @return list<DetectedPhone>
      */
     public function detect(Listing $listing): array
@@ -50,6 +79,11 @@ final class PhoneDetector
 
         foreach ($this->scanText($listing->rawText) as $detected) {
             // Structured numbers win — keep the already-stored one if present.
+            $byE164[$detected->e164] ??= $detected;
+        }
+
+        foreach ($this->scanWordDigits($listing->rawText) as $detected) {
+            // Digit-runs and structured numbers both win over word-digit runs.
             $byE164[$detected->e164] ??= $detected;
         }
 
@@ -80,6 +114,62 @@ final class PhoneDetector
                 origin: PhoneOrigin::TEXT,
                 marker: $this->markerBefore($text, $offset),
             );
+        }
+
+        return $found;
+    }
+
+    /**
+     * Scans for nine consecutive Czech digit-words (e.g. `ctyri pet osm sest
+     * sedm devet jedna dva tri`) and reconstructs the national number. A
+     * non-digit word between two digit-words breaks the run — we never glue
+     * across noise — and the first reconstructed digit must be 2-9, matching
+     * the regex scanner's `[2-9]` lead requirement for Czech phones.
+     *
+     * @return list<DetectedPhone>
+     */
+    private function scanWordDigits(string $text): array
+    {
+        $lower = mb_strtolower($text, 'UTF-8');
+        if (preg_match_all('/[\p{L}]+/u', $lower, $matches, PREG_OFFSET_CAPTURE) === false) {
+            return [];
+        }
+
+        $tokens = $matches[0];
+        $tokenCount = count($tokens);
+        $found = [];
+
+        $i = 0;
+        while ($i + 9 <= $tokenCount) {
+            $digits = '';
+            $allDigitWords = true;
+            for ($j = 0; $j < 9; $j++) {
+                $word = $tokens[$i + $j][0];
+                if (! isset(self::DIGIT_WORDS[$word])) {
+                    $allDigitWords = false;
+                    break;
+                }
+                $digits .= self::DIGIT_WORDS[$word];
+            }
+
+            if ($allDigitWords && strlen($digits) === 9 && $digits[0] >= '2') {
+                $startOffset = $tokens[$i][1];
+                $lastWord = $tokens[$i + 8][0];
+                $endOffset = $tokens[$i + 8][1] + strlen($lastWord);
+                $raw = substr($text, $startOffset, $endOffset - $startOffset);
+
+                $found[] = new DetectedPhone(
+                    e164: '+420' . $digits,
+                    raw: $raw,
+                    origin: PhoneOrigin::TEXT,
+                    marker: $this->markerBefore($text, $startOffset),
+                );
+
+                $i += 9; // skip past the consumed run — no overlapping matches
+                continue;
+            }
+
+            $i++;
         }
 
         return $found;

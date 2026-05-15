@@ -129,4 +129,65 @@ final class PhoneDetectorTest extends TestCase
         self::assertSame('+420608444111', $phones[0]->e164);
         self::assertNull($phones[0]->marker);
     }
+
+    public function testExtractsPhoneSpelledOutInCzechWords(): void
+    {
+        $text = 'tel cislo na mne sedm sedm sedm jedna dva tri ctyri pet sest';
+        $phones = (new PhoneDetector())->detect($this->listing($text));
+
+        self::assertCount(1, $phones);
+        self::assertSame('+420777123456', $phones[0]->e164);
+        self::assertSame(PhoneOrigin::TEXT, $phones[0]->origin);
+        // Existing markerBefore() iterates MARKERS in order; "tel" is the
+        // first entry and appears inside the 25-char window before the run,
+        // so it wins over "cislo" / "na mne" further right in the window.
+        self::assertSame('tel', $phones[0]->marker);
+    }
+
+    public function testExtractsCzechDigitWordsWithDiacritics(): void
+    {
+        // Same number, accented spelling: sedm/jedna/dva/tři/čtyři/pět/šest.
+        $text = 'sedm sedm sedm jedna dva tři čtyři pět šest';
+        $phones = (new PhoneDetector())->detect($this->listing($text));
+
+        self::assertCount(1, $phones);
+        self::assertSame('+420777123456', $phones[0]->e164);
+    }
+
+    public function testIgnoresWordDigitRunStartingWithDigitBelowTwo(): void
+    {
+        // First Czech mobile digit is 6-9, landlines start 2-5 — never 0/1.
+        // A run starting "nula nula …" must not produce a phone.
+        $text = 'nula nula jedna jedna dva tri ctyri pet sest';
+        $phones = (new PhoneDetector())->detect($this->listing($text));
+
+        self::assertSame([], $phones);
+    }
+
+    public function testRequiresExactlyNineConsecutiveDigitWords(): void
+    {
+        // Only eight digit-words — must not match.
+        $text = 'sedm sedm sedm jedna dva tri ctyri pet';
+        self::assertSame([], (new PhoneDetector())->detect($this->listing($text)));
+    }
+
+    public function testDoesNotMatchWhenNonDigitWordBreaksTheRun(): void
+    {
+        // A non-digit word inside the run breaks it — we never glue across.
+        $text = 'sedm sedm sedm jedna NEMOVITOST tri ctyri pet sest sedm';
+        self::assertSame([], (new PhoneDetector())->detect($this->listing($text)));
+    }
+
+    public function testWordDigitRunIsDeduplicatedWithStructuredPhone(): void
+    {
+        // Structured wins — the word-digit duplicate must not appear twice.
+        $listing = $this->listing(
+            rawText: 'sedm sedm sedm jedna dva tri ctyri pet sest',
+            structuredPhones: ['+420777123456'],
+        );
+        $phones = (new PhoneDetector())->detect($listing);
+
+        self::assertCount(1, $phones);
+        self::assertSame(PhoneOrigin::STRUCTURED, $phones[0]->origin);
+    }
 }
