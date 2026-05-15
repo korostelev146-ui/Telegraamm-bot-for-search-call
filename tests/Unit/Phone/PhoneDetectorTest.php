@@ -190,4 +190,12 @@ final class PhoneDetectorTest extends TestCase
         self::assertCount(1, $phones);
         self::assertSame(PhoneOrigin::STRUCTURED, $phones[0]->origin);
     }
+
+    public function testDoesNotMatchWhenBareDigitBreaksTheRun(): void
+    {
+        // A bare digit character between word-digits must not silently glue
+        // the surrounding words into a fake 9-digit run.
+        $text = 'sedm sedm sedm 7 jedna dva tri ctyri pet sest';
+        self::assertSame([], (new PhoneDetector())->detect($this->listing($text)));
+    }
 }

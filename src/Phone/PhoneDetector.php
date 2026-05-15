@@ -131,7 +131,11 @@ final class PhoneDetector
     private function scanWordDigits(string $text): array
     {
         $lower = mb_strtolower($text, 'UTF-8');
-        if (preg_match_all('/[\p{L}]+/u', $lower, $matches, PREG_OFFSET_CAPTURE) === false) {
+        // Match letter-runs OR single digit characters as separate tokens. A
+        // bare digit (e.g. "7" between word-digits) thus becomes its own token,
+        // is not a key in DIGIT_WORDS, and breaks the nine-in-a-row window —
+        // honouring the "no gluing across noise" promise in the docblock.
+        if (preg_match_all('/[\p{L}]+|\d/u', $lower, $matches, PREG_OFFSET_CAPTURE) === false) {
             return [];
         }
 
