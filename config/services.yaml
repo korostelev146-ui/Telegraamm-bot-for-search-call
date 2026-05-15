@@ -10,7 +10,7 @@ services:
             $databasePath: '%env(resolve:DATABASE_PATH)%'
             $monitorRegion: '%env(MONITOR_REGION)%'
             $monitorDealTypes: '%env(MONITOR_DEAL_TYPES)%'
-            $firstRunLimit: '%env(int:MONITOR_FIRST_RUN_LIMIT)%'
+            $batchLimit: '%env(int:MONITOR_BATCH_LIMIT)%'
 
     _instanceof:
         App\Source\ListingSource:

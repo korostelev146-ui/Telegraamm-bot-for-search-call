@@ -35,47 +35,40 @@ final class MonitorRunner
         private readonly MessageFormatter $formatter,
         private readonly Notifier $notifier,
         private readonly LoggerInterface $logger,
-        private readonly int $firstRunLimit,
+        private readonly int $batchLimit,
     ) {
     }
 
     public function run(): void
     {
-        $isFirstRun = $this->seenStore->count() === 0;
-
         foreach ($this->sources as $source) {
             $sentThisSource = 0;
 
             try {
-                $listings = $source->fetchRecentListings();
+                foreach ($source->fetchRecentListings() as $listing) {
+                    if ($sentThisSource >= $this->batchLimit) {
+                        break; // next run resumes the backlog
+                    }
+
+                    if ($this->seenStore->isSeen($listing->id)) {
+                        continue;
+                    }
+
+                    if ($this->processListing($source, $listing)) {
+                        ++$sentThisSource;
+                    }
+                }
             } catch (\Throwable $exception) {
                 $this->logger->error('Source fetch failed', [
                     'source' => $source::class,
                     'error' => $exception->getMessage(),
                 ]);
-
-                continue;
-            }
-
-            foreach ($listings as $listing) {
-                if ($this->seenStore->isSeen($listing->id)) {
-                    continue;
-                }
-
-                $sent = $this->processListing($source, $listing, $isFirstRun, $sentThisSource);
-                if ($sent) {
-                    ++$sentThisSource;
-                }
             }
         }
     }
 
-    private function processListing(
-        ListingSource $source,
-        Listing $listing,
-        bool $isFirstRun,
-        int $sentThisSource,
-    ): bool {
+    private function processListing(ListingSource $source, Listing $listing): bool
+    {
         try {
             $listing = $source->hydrate($listing);
         } catch (\Throwable $exception) {
@@ -116,12 +109,6 @@ final class MonitorRunner
             && $sellerMeta->email !== '';
 
         if ($phones === [] && ! $hasEmail) {
-            $this->seenStore->markSeen($listing->id, $listing->source);
-
-            return false;
-        }
-
-        if ($isFirstRun && $sentThisSource >= $this->firstRunLimit) {
             $this->seenStore->markSeen($listing->id, $listing->source);
 
             return false;
