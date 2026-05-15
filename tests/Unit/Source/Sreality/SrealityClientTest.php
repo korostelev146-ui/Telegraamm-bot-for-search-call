@@ -130,4 +130,27 @@ final class SrealityClientTest extends TestCase
         self::assertNull($hydrated->sellerMeta);
         self::assertSame([], $hydrated->structuredPhones);
     }
+
+    public function testHydrateThrottlesBetweenDetailCalls(): void
+    {
+        // Two list + two details = one back-to-back detail-call pair. The
+        // second hydrate must wait at least THROTTLE_USEC microseconds after
+        // the first; 350 ms is the production value (see SrealityClient).
+        $http = new MockHttpClient([
+            new MockResponse($this->fixture('sreality_list.json')),
+            new MockResponse($this->fixture('sreality_detail_private.json')),
+            new MockResponse($this->fixture('sreality_detail_agency.json')),
+        ]);
+        $client = new SrealityClient($http, new NullLogger(), 'praha', 'sale');
+
+        $shallow = $client->fetchRecentListings();
+        $start = hrtime(true);
+        $client->hydrate($shallow[0]);
+        $client->hydrate($shallow[1]);
+        $elapsedUs = (int) ((hrtime(true) - $start) / 1000);
+
+        // First call has no throttle; second call must wait the full window.
+        // Allow the 300 ms floor — the production value is 350 ms.
+        self::assertGreaterThanOrEqual(300_000, $elapsedUs);
+    }
 }

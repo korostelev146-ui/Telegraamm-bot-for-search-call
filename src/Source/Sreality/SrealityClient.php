@@ -83,6 +83,15 @@ final class SrealityClient implements ListingSource
         47 => 'pokoj',
     ];
 
+    /**
+     * Minimum gap between detail-endpoint calls, in microseconds. A full scan
+     * fires hundreds of detail requests; pacing them ~350 ms apart keeps the
+     * request rate within what a real browser would produce.
+     */
+    private const THROTTLE_USEC = 350_000;
+
+    private int $lastDetailCallAt = 0;
+
     public function __construct(
         private readonly HttpClientInterface $httpClient,
         private readonly LoggerInterface $logger,
@@ -140,6 +149,8 @@ final class SrealityClient implements ListingSource
             'hash_id' => $hashId,
         ]);
 
+        $this->throttleDetailCall();
+
         $data = $this->httpClient
             ->request('GET', self::DETAIL_URL . $hashId, $this->options())
             ->toArray();
@@ -152,6 +163,22 @@ final class SrealityClient implements ListingSource
             sellerMeta: $seller['meta'],
             structuredPhones: $seller['phones'],
         );
+    }
+
+    /**
+     * Sleeps so that consecutive detail-endpoint calls are spaced at least
+     * THROTTLE_USEC apart. The very first call passes through with no wait.
+     */
+    private function throttleDetailCall(): void
+    {
+        if ($this->lastDetailCallAt !== 0) {
+            $elapsed = (int) (hrtime(true) / 1000) - $this->lastDetailCallAt;
+            if ($elapsed < self::THROTTLE_USEC) {
+                usleep(self::THROTTLE_USEC - $elapsed);
+            }
+        }
+
+        $this->lastDetailCallAt = (int) (hrtime(true) / 1000);
     }
 
     /**
