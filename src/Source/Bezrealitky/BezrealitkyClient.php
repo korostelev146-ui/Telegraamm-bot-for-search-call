@@ -36,9 +36,15 @@ final class BezrealitkyClient implements ListingSource
         'rent' => 'PRONAJEM',
     ];
 
+    /**
+     * Page size for the GraphQL list call. A "short" page (strictly fewer items
+     * than this) marks the last page.
+     */
+    private const PER_PAGE = 100;
+
     private const QUERY = <<<'GQL'
-        query AdvertList($offerType: [OfferType], $regionId: ID, $limit: Int, $order: ResultOrder) {
-            listAdverts(offerType: $offerType, estateType: [BYT], regionId: $regionId, limit: $limit, order: $order) {
+        query AdvertList($offerType: [OfferType], $regionId: ID, $limit: Int, $offset: Int, $order: ResultOrder) {
+            listAdverts(offerType: $offerType, estateType: [BYT], regionId: $regionId, limit: $limit, offset: $offset, order: $order) {
                 totalCount
                 list {
                     id
@@ -61,46 +67,58 @@ final class BezrealitkyClient implements ListingSource
     ) {
     }
 
-    public function fetchRecentListings(): array
+    public function fetchRecentListings(): iterable
     {
         $regionId = self::REGION_IDS[$this->monitorRegion] ?? self::REGION_IDS['praha'];
+        $offerTypes = $this->offerTypes();
 
-        $variables = [
-            'offerType' => $this->offerTypes(),
-            'regionId' => $regionId,
-            'limit' => 60,
-            'order' => 'TIMEORDER_DESC',
-        ];
+        $offset = 0;
+        while (true) {
+            $variables = [
+                'offerType' => $offerTypes,
+                'regionId' => $regionId,
+                'limit' => self::PER_PAGE,
+                'offset' => $offset,
+                'order' => 'TIMEORDER_DESC',
+            ];
 
-        $this->logger->info('Bezrealitky GraphQL request', [
-            'variables' => $variables,
-        ]);
-
-        $data = $this->httpClient->request('POST', self::GRAPHQL_URL, [
-            'headers' => [
-                'Content-Type' => 'application/json',
-                'Accept' => 'application/json',
-                'User-Agent' => self::USER_AGENT,
-            ],
-            'json' => [
-                'query' => self::QUERY,
-                'operationName' => 'AdvertList',
+            $this->logger->info('Bezrealitky GraphQL request', [
                 'variables' => $variables,
-            ],
-        ])->toArray();
+            ]);
 
-        $dataSection = is_array($data['data'] ?? null) ? $data['data'] : [];
-        $listAdverts = is_array($dataSection['listAdverts'] ?? null) ? $dataSection['listAdverts'] : [];
-        $rawList = is_array($listAdverts['list'] ?? null) ? $listAdverts['list'] : [];
+            $data = $this->httpClient->request('POST', self::GRAPHQL_URL, [
+                'headers' => [
+                    'Content-Type' => 'application/json',
+                    'Accept' => 'application/json',
+                    'User-Agent' => self::USER_AGENT,
+                ],
+                'json' => [
+                    'query' => self::QUERY,
+                    'operationName' => 'AdvertList',
+                    'variables' => $variables,
+                ],
+            ])->toArray();
 
-        $listings = [];
-        foreach ($rawList as $item) {
-            if (is_array($item)) {
-                $listings[] = $this->map($item);
+            $dataSection = is_array($data['data'] ?? null) ? $data['data'] : [];
+            $listAdverts = is_array($dataSection['listAdverts'] ?? null) ? $dataSection['listAdverts'] : [];
+            $rawList = is_array($listAdverts['list'] ?? null) ? $listAdverts['list'] : [];
+
+            if ($rawList === []) {
+                break;
             }
-        }
 
-        return $listings;
+            foreach ($rawList as $item) {
+                if (is_array($item)) {
+                    yield $this->map($item);
+                }
+            }
+
+            if (count($rawList) < self::PER_PAGE) {
+                break; // short page → no more results
+            }
+
+            $offset += self::PER_PAGE;
+        }
     }
 
     public function hydrate(Listing $listing): Listing

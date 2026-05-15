@@ -47,6 +47,12 @@ final class SrealityClient implements ListingSource
     ];
 
     /**
+     * `per_page` is honoured by Sreality up to 100 (verified empirically); a
+     * "short" page (strictly fewer items than this) marks the last page.
+     */
+    private const PER_PAGE = 100;
+
+    /**
      * Public-URL path slugs for the SEO category codes. The detail page lives at
      * /detail/{type}/{main}/{sub}/{locality}/{hash_id} — a bare /detail/{hash_id}
      * 404s. A non-canonical (but recognised) disposition slug still resolves:
@@ -100,39 +106,50 @@ final class SrealityClient implements ListingSource
     ) {
     }
 
-    public function fetchRecentListings(): array
+    public function fetchRecentListings(): iterable
     {
         $regionId = self::REGION_IDS[$this->monitorRegion] ?? self::REGION_IDS['praha'];
-        $listings = [];
 
         foreach ($this->dealTypes() as $dealType) {
-            $query = http_build_query([
-                'category_main_cb' => self::APARTMENT_CATEGORY,
-                'category_type_cb' => self::DEAL_TYPE_CODES[$dealType->value],
-                'locality_region_id' => $regionId,
-                'per_page' => 60,
-                'sort' => 'date',
-            ]);
+            $page = 1;
+            while (true) {
+                $query = http_build_query([
+                    'category_main_cb' => self::APARTMENT_CATEGORY,
+                    'category_type_cb' => self::DEAL_TYPE_CODES[$dealType->value],
+                    'locality_region_id' => $regionId,
+                    'per_page' => self::PER_PAGE,
+                    'page' => $page,
+                    'sort' => 'date',
+                ]);
 
-            $this->logger->info('Sreality list request', [
-                'query' => $query,
-            ]);
+                $this->logger->info('Sreality list request', [
+                    'query' => $query,
+                ]);
 
-            $data = $this->httpClient
-                ->request('GET', self::LIST_URL . '?' . $query, $this->options())
-                ->toArray();
+                $data = $this->httpClient
+                    ->request('GET', self::LIST_URL . '?' . $query, $this->options())
+                    ->toArray();
 
-            $embedded = is_array($data['_embedded'] ?? null) ? $data['_embedded'] : [];
-            $estates = is_array($embedded['estates'] ?? null) ? $embedded['estates'] : [];
+                $embedded = is_array($data['_embedded'] ?? null) ? $data['_embedded'] : [];
+                $estates = is_array($embedded['estates'] ?? null) ? $embedded['estates'] : [];
 
-            foreach ($estates as $estate) {
-                if (is_array($estate)) {
-                    $listings[] = $this->mapShallow($estate, $dealType);
+                if ($estates === []) {
+                    break;
                 }
+
+                foreach ($estates as $estate) {
+                    if (is_array($estate)) {
+                        yield $this->mapShallow($estate, $dealType);
+                    }
+                }
+
+                if (count($estates) < self::PER_PAGE) {
+                    break; // short page → no more results
+                }
+
+                ++$page;
             }
         }
-
-        return $listings;
     }
 
     public function hydrate(Listing $listing): Listing
