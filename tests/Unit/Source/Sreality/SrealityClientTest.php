@@ -181,4 +181,93 @@ final class SrealityClientTest extends TestCase
 
         self::assertGreaterThanOrEqual(300_000, $elapsedUs);
     }
+
+    public function testFetchThrowsWhenNextDataMissing(): void
+    {
+        $http = new MockHttpClient([new MockResponse('<html><body>nothing here</body></html>')]);
+        $client = new SrealityClient($http, new NullLogger(), 'praha', 'sale');
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('__NEXT_DATA__ missing');
+
+        iterator_to_array($client->fetchRecentListings(), false);
+    }
+
+    public function testFetchThrowsWhenEstatesSearchQueryMissing(): void
+    {
+        $html = '<!doctype html><html><body><script id="__NEXT_DATA__" type="application/json">'
+            . '{"props":{"pageProps":{"dehydratedState":{"queries":[]}}}}'
+            . '</script></body></html>';
+        $http = new MockHttpClient([new MockResponse($html)]);
+        $client = new SrealityClient($http, new NullLogger(), 'praha', 'sale');
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('query key "estatesSearch" missing');
+
+        iterator_to_array($client->fetchRecentListings(), false);
+    }
+
+    public function testFetchThrowsOnHttp403(): void
+    {
+        $http = new MockHttpClient([new MockResponse('blocked', ['http_code' => 403])]);
+        $client = new SrealityClient($http, new NullLogger(), 'praha', 'sale');
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('HTTP 403');
+
+        iterator_to_array($client->fetchRecentListings(), false);
+    }
+
+    public function testFetchThrowsOnHttp429(): void
+    {
+        $http = new MockHttpClient([new MockResponse('too many', ['http_code' => 429])]);
+        $client = new SrealityClient($http, new NullLogger(), 'praha', 'sale');
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('HTTP 429');
+
+        iterator_to_array($client->fetchRecentListings(), false);
+    }
+
+    public function testFetchThrowsOnHttp503(): void
+    {
+        $http = new MockHttpClient([new MockResponse('down', ['http_code' => 503])]);
+        $client = new SrealityClient($http, new NullLogger(), 'praha', 'sale');
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('HTTP 503');
+
+        iterator_to_array($client->fetchRecentListings(), false);
+    }
+
+    public function testFetchThrowsOnMalformedJsonInNextData(): void
+    {
+        $html = '<!doctype html><html><body><script id="__NEXT_DATA__" type="application/json">{not json}</script></body></html>';
+        $http = new MockHttpClient([new MockResponse($html)]);
+        $client = new SrealityClient($http, new NullLogger(), 'praha', 'sale');
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('malformed JSON');
+
+        iterator_to_array($client->fetchRecentListings(), false);
+    }
+
+    public function testHydrateThrowsWhenEstateQueryMissing(): void
+    {
+        $detailHtml = '<!doctype html><html><body><script id="__NEXT_DATA__" type="application/json">'
+            . '{"props":{"pageProps":{"dehydratedState":{"queries":[]}}}}'
+            . '</script></body></html>';
+        $http = new MockHttpClient([
+            new MockResponse($this->fixture('sreality_search_page.html')),
+            new MockResponse($detailHtml),
+        ]);
+        $client = new SrealityClient($http, new NullLogger(), 'praha', 'sale');
+
+        $shallow = iterator_to_array($client->fetchRecentListings(), false)[0];
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('query key "estate" missing');
+
+        $client->hydrate($shallow);
+    }
 }
