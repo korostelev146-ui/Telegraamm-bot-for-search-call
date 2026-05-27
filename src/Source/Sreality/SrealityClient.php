@@ -133,9 +133,7 @@ final class SrealityClient implements ListingSource
 
                 $this->throttleSearchPage();
                 $data = $this->fetchNextData($url);
-                if ($data === null) {
-                    break; // unreachable when allowNotFound is false; guards future use
-                }
+                assert($data !== null, 'fetchNextData without allowNotFound never returns null');
 
                 $query = $this->findQuery($data, 'estatesSearch');
                 if ($query === null) {
@@ -155,9 +153,14 @@ final class SrealityClient implements ListingSource
                 }
 
                 foreach ($results as $result) {
-                    if (is_array($result)) {
-                        yield $this->mapShallow($result, $dealType);
+                    if (! is_array($result)) {
+                        continue;
                     }
+                    $id = $result['id'] ?? null;
+                    if (! is_int($id) || $id <= 0) {
+                        continue;
+                    }
+                    yield $this->mapShallow($result, $dealType);
                 }
 
                 $offset = is_int($pagination['offset'] ?? null) ? $pagination['offset'] : 0;
@@ -506,10 +509,12 @@ final class SrealityClient implements ListingSource
     }
 
     /**
-     * Canonicalises a `seller.phones[]` array to a de-duplicated list of E.164
-     * numbers. Each entry in the new payload is `{phoneType, phone}` with
-     * `phone` already in E.164 form (`+420…`); we still run it through
-     * toE164() for defensive normalisation.
+     * Filters a `seller.phones[]` array down to a de-duplicated list of Czech
+     * E.164 numbers. Each payload entry is `{phoneType, phone}` with `phone`
+     * already in E.164 form (`+420…`). We validate the shape rather than
+     * re-prefix — naive `'+420' . substr($digits, -9)` would corrupt foreign
+     * numbers (e.g. Slovak `+421…` would silently collide with a Czech one
+     * in ContactRegistry).
      *
      * @return list<string>
      */
@@ -521,28 +526,12 @@ final class SrealityClient implements ListingSource
                 continue;
             }
             $phone = is_string($entry['phone'] ?? null) ? $entry['phone'] : '';
-            $e164 = $this->toE164($phone);
-            if ($e164 !== null) {
-                $phones[$e164] = true;
+            if (preg_match('/^\+420[2-9]\d{8}$/', $phone) === 1) {
+                $phones[$phone] = true;
             }
         }
 
         return array_keys($phones);
-    }
-
-    /**
-     * Canonicalises a Czech phone number to "+420" + 9 digits, matching the
-     * format PhoneDetector produces, so ContactRegistry keys stay consistent
-     * across sources.
-     */
-    private function toE164(string $number): ?string
-    {
-        $digits = preg_replace('/\D/', '', $number) ?? '';
-        if (strlen($digits) < 9) {
-            return null;
-        }
-
-        return '+420' . substr($digits, -9);
     }
 
     /**
