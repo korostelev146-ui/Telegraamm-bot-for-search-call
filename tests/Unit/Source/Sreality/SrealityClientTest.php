@@ -102,7 +102,7 @@ final class SrealityClientTest extends TestCase
         self::assertNotNull($hydrated->sellerMeta);
         self::assertFalse($hydrated->sellerMeta->hasPremise);
         self::assertNull($hydrated->sellerMeta->totalListingCount);
-        self::assertSame('Čenětická 2kk od vlastnika', $hydrated->sellerMeta->name);
+        self::assertSame('Ruslan Novák', $hydrated->sellerMeta->name);
         self::assertSame('ruslan76731@gmail.com', $hydrated->sellerMeta->email);
         self::assertSame([], $hydrated->structuredPhones);
     }
@@ -269,5 +269,31 @@ final class SrealityClientTest extends TestCase
         $this->expectExceptionMessage('query key "estate" missing');
 
         $client->hydrate($shallow);
+    }
+
+    public function testHydrateTrulyAnonymousListingHasNoContact(): void
+    {
+        // Auction-style listing: seller, premise, and rus are all null.
+        // hydrate() returns the listing with null sellerMeta and empty phones;
+        // the downstream gate then drops it via the no-contact path.
+        $detailHtml = '<!doctype html><html><body><script id="__NEXT_DATA__" type="application/json">'
+            . '{"props":{"pageProps":{"dehydratedState":{"queries":[{'
+            . '"queryKey":["estate",{"id":1,"preview":false,"lang":"cs"}],'
+            . '"state":{"data":{"name":"Auction","description":"text","locality":{},'
+            . '"seller":null,"premise":null,"rus":null}}'
+            . '}]}}}}'
+            . '</script></body></html>';
+        $http = new MockHttpClient([
+            new MockResponse($this->fixture('sreality_search_page.html')),
+            new MockResponse($detailHtml),
+        ]);
+        $client = new SrealityClient($http, new NullLogger(), 'praha', 'sale');
+
+        $shallow = iterator_to_array($client->fetchRecentListings(), false)[0];
+        $hydrated = $client->hydrate($shallow);
+
+        self::assertSame('text', $hydrated->rawText);
+        self::assertNull($hydrated->sellerMeta);
+        self::assertSame([], $hydrated->structuredPhones);
     }
 }

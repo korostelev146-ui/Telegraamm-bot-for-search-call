@@ -479,10 +479,23 @@ final class SrealityClient implements ListingSource
     }
 
     /**
-     * Reads seller + premise from a detail-page estate payload. A null `seller`
-     * collapses to ('meta' => null, 'phones' => []). Otherwise hasPremise is
-     * derived from the presence of `premise`; totalListingCount has no
-     * equivalent in the new API (always null going forward — see design doc).
+     * Reads contact info for the listing's seller. Sreality's new payload
+     * exposes three independent fields:
+     *
+     *   - `seller`  — populated for broker-listed estates (with a real estate
+     *                 agent profile carrying name, email and phones)
+     *   - `premise` — populated alongside `seller` when the agent belongs to
+     *                 an agency / firm
+     *   - `rus`     — populated for FSBO listings (Realitní Uživatel Service;
+     *                 Sreality's user-account block carrying the private
+     *                 owner's first/last name, email, and — only when logged
+     *                 in — phones). Unrelated to the abbreviation looking
+     *                 like "Russian": it is Sreality's internal name for
+     *                 their account system.
+     *
+     * Auction listings have `seller: null, premise: null, rus: null` — they
+     * collapse to ('meta' => null, 'phones' => []) and are dropped by the
+     * downstream no-contact gate.
      *
      * @param array<mixed, mixed> $estate
      * @return array{meta: ?SellerMeta, phones: list<string>}
@@ -490,21 +503,44 @@ final class SrealityClient implements ListingSource
     private function extractSeller(array $estate): array
     {
         $seller = $estate['seller'] ?? null;
-        if (! is_array($seller)) {
+        if (is_array($seller)) {
+            $premise = $estate['premise'] ?? null;
+            $hasPremise = is_array($premise);
+            $name = is_string($seller['name'] ?? null) ? $seller['name'] : null;
+            $email = is_string($seller['email'] ?? null) ? $seller['email'] : null;
+
             return [
-                'meta' => null,
-                'phones' => [],
+                'meta' => new SellerMeta($hasPremise, null, $name, $email),
+                'phones' => $this->extractPhones($seller['phones'] ?? null),
             ];
         }
 
-        $premise = $estate['premise'] ?? null;
-        $hasPremise = is_array($premise);
-        $name = is_string($seller['name'] ?? null) ? $seller['name'] : null;
-        $email = is_string($seller['email'] ?? null) ? $seller['email'] : null;
+        $rus = $estate['rus'] ?? null;
+        if (is_array($rus)) {
+            $first = is_string($rus['name'] ?? null) ? $rus['name'] : '';
+            $last = is_string($rus['surname'] ?? null) ? $rus['surname'] : '';
+            $fullName = trim($first . ' ' . $last);
+            $email = is_string($rus['email'] ?? null) ? $rus['email'] : null;
+            $phones = $this->extractPhones($rus['phones'] ?? null);
+
+            // An empty `rus` block (no name, no email, no phones) carries no
+            // contact information — treat as truly anonymous (auction-like).
+            if ($fullName === '' && ($email === null || $email === '') && $phones === []) {
+                return [
+                    'meta' => null,
+                    'phones' => [],
+                ];
+            }
+
+            return [
+                'meta' => new SellerMeta(false, null, $fullName !== '' ? $fullName : null, $email),
+                'phones' => $phones,
+            ];
+        }
 
         return [
-            'meta' => new SellerMeta($hasPremise, null, $name, $email),
-            'phones' => $this->extractPhones($seller['phones'] ?? null),
+            'meta' => null,
+            'phones' => [],
         ];
     }
 
