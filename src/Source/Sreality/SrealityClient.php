@@ -13,46 +13,39 @@ use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 /**
- * Sreality source. The list endpoint returns shallow listings; hydrate() fetches
- * the detail endpoint, which is the only place description text, seller metadata
- * and structured phones are exposed.
+ * Sreality source over HTML scraping. The old /api/cs/v2/estates JSON API was
+ * retired on 26 May 2026; the replacement /api/v1/estates requires authentication.
+ * This client consumes the server-rendered Next.js pages instead, extracting the
+ * structured data from each page's <script id="__NEXT_DATA__"> JSON blob — the
+ * same data Apollo would otherwise fetch from the authenticated API.
+ *
+ * `fetchRecentListings()` paginates the /hledani/... search pages newest-first.
+ * `hydrate()` walks the per-listing /detail/... page. Both share the same
+ * fetchNextData() helper which centralises HTTP-status handling, __NEXT_DATA__
+ * extraction, JSON parsing, and defensive logging on structural drift.
  */
 final class SrealityClient implements ListingSource
 {
-    private const LIST_URL = 'https://www.sreality.cz/api/cs/v2/estates';
-
-    private const DETAIL_URL = 'https://www.sreality.cz/api/cs/v2/estates/';
+    private const SEARCH_URL_BASE = 'https://www.sreality.cz/hledani';
 
     private const USER_AGENT =
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
     /**
-     * Sreality region id for Prague (verified in reconnaissance).
+     * Sreality region slug used in the search URL path. We only support 'praha'
+     * for the same reason the previous client only had one entry.
      */
-    private const REGION_IDS = [
-        'praha' => 10,
+    private const REGION_SLUGS = [
+        'praha' => 'praha',
     ];
 
     /**
-     * Sreality category_main_cb for apartments. Sreality monitoring is
-     * apartments-only (the house segment is covered via Bezrealitky); the
-     * `byt` SUB_CB_SLUGS below cover every disposition that can appear.
+     * Maps our internal deal-type enum to the Czech slug in the search URL.
      */
-    private const APARTMENT_CATEGORY = 1;
-
-    /**
-     * Sreality category_type_cb codes.
-     */
-    private const DEAL_TYPE_CODES = [
-        'sale' => 1,
-        'rent' => 2,
+    private const DEAL_TYPE_SLUGS = [
+        'sale' => 'prodej',
+        'rent' => 'pronajem',
     ];
-
-    /**
-     * `per_page` is honoured by Sreality up to 100 (verified empirically); a
-     * "short" page (strictly fewer items than this) marks the last page.
-     */
-    private const PER_PAGE = 100;
 
     /**
      * Public-URL path slugs for the SEO category codes. The detail page lives at
@@ -90,9 +83,7 @@ final class SrealityClient implements ListingSource
         12 => '6-a-vice',
         16 => 'atypicky',
         47 => 'pokoj',
-        // Houses (category_main_cb = 2). The canonical slugs are short forms;
-        // Sreality 301-redirects a wrong-but-recognised token to the right one,
-        // so the `1+kk` apartment fallback also resolves for unmapped houses.
+        // Houses (category_main_cb = 2).
         33 => 'chata',
         37 => 'rodinny',
         39 => 'vila',
@@ -100,13 +91,20 @@ final class SrealityClient implements ListingSource
     ];
 
     /**
-     * Minimum gap between detail-endpoint calls, in microseconds. A full scan
-     * fires hundreds of detail requests; pacing them ~350 ms apart keeps the
-     * request rate within what a real browser would produce.
+     * Minimum gap between detail-endpoint calls, in microseconds. The very first
+     * call in a Generator passes through immediately; subsequent ones wait.
      */
     private const THROTTLE_USEC = 350_000;
 
+    /**
+     * Minimum gap between search-page fetches, in microseconds. Smaller dose
+     * than detail throttling because there are far fewer search pages per run.
+     */
+    private const SEARCH_THROTTLE_USEC = 500_000;
+
     private int $lastDetailCallAt = 0;
+
+    private int $lastSearchCallAt = 0;
 
     public function __construct(
         private readonly HttpClientInterface $httpClient,
@@ -118,43 +116,57 @@ final class SrealityClient implements ListingSource
 
     public function fetchRecentListings(): iterable
     {
-        $regionId = self::REGION_IDS[$this->monitorRegion] ?? self::REGION_IDS['praha'];
+        $regionSlug = self::REGION_SLUGS[$this->monitorRegion] ?? self::REGION_SLUGS['praha'];
 
         foreach ($this->dealTypes() as $dealType) {
+            $typeSlug = self::DEAL_TYPE_SLUGS[$dealType->value];
             $page = 1;
+
             while (true) {
-                $query = http_build_query([
-                    'category_main_cb' => self::APARTMENT_CATEGORY,
-                    'category_type_cb' => self::DEAL_TYPE_CODES[$dealType->value],
-                    'locality_region_id' => $regionId,
-                    'per_page' => self::PER_PAGE,
-                    'page' => $page,
-                    'sort' => 'date',
-                ]);
+                $url = sprintf(
+                    '%s/%s/byty/%s?strana=%d&sort=-date',
+                    self::SEARCH_URL_BASE,
+                    $typeSlug,
+                    $regionSlug,
+                    $page,
+                );
 
-                $this->logger->info('Sreality list request', [
-                    'query' => $query,
-                ]);
+                $this->throttleSearchPage();
+                $data = $this->fetchNextData($url);
+                assert($data !== null, 'fetchNextData without allowNotFound never returns null');
 
-                $data = $this->httpClient
-                    ->request('GET', self::LIST_URL . '?' . $query, $this->options())
-                    ->toArray();
+                $query = $this->findQuery($data, 'estatesSearch');
+                if ($query === null) {
+                    $this->logger->error('Sreality: query key "estatesSearch" missing', [
+                        'url' => $url,
+                    ]);
+                    throw new \RuntimeException(sprintf('Sreality: query key "estatesSearch" missing at %s', $url));
+                }
 
-                $embedded = is_array($data['_embedded'] ?? null) ? $data['_embedded'] : [];
-                $estates = is_array($embedded['estates'] ?? null) ? $embedded['estates'] : [];
+                $state = is_array($query['state'] ?? null) ? $query['state'] : [];
+                $stateData = is_array($state['data'] ?? null) ? $state['data'] : [];
+                $results = is_array($stateData['results'] ?? null) ? $stateData['results'] : [];
+                $pagination = is_array($stateData['pagination'] ?? null) ? $stateData['pagination'] : [];
 
-                if ($estates === []) {
+                if ($results === []) {
                     break;
                 }
 
-                foreach ($estates as $estate) {
-                    if (is_array($estate)) {
-                        yield $this->mapShallow($estate, $dealType);
+                foreach ($results as $result) {
+                    if (! is_array($result)) {
+                        continue;
                     }
+                    $id = $result['id'] ?? null;
+                    if (! is_int($id) || $id <= 0) {
+                        continue;
+                    }
+                    yield $this->mapShallow($result, $dealType);
                 }
 
-                if (count($estates) < self::PER_PAGE) {
-                    break; // short page → no more results
+                $offset = is_int($pagination['offset'] ?? null) ? $pagination['offset'] : 0;
+                $total = is_int($pagination['total'] ?? null) ? $pagination['total'] : 0;
+                if ($total > 0 && $offset + count($results) >= $total) {
+                    break;
                 }
 
                 ++$page;
@@ -170,26 +182,166 @@ final class SrealityClient implements ListingSource
             );
         }
 
-        $hashId = substr($listing->id, strlen('sreality:'));
-
-        $this->logger->info('Sreality detail request', [
-            'hash_id' => $hashId,
-        ]);
-
         $this->throttleDetailCall();
 
-        $data = $this->httpClient
-            ->request('GET', self::DETAIL_URL . $hashId, $this->options())
-            ->toArray();
+        $data = $this->fetchNextData($listing->url, allowNotFound: true);
+        if ($data === null) {
+            $this->logger->info('Sreality: listing deactivated (404), dropping via no-contact gate', [
+                'id' => $listing->id,
+                'url' => $listing->url,
+            ]);
 
-        $text = $this->extractText($data);
-        $seller = $this->extractSeller($data);
+            return $listing; // unchanged — downstream gate sees no phone+email and drops
+        }
+
+        $query = $this->findQuery($data, 'estate');
+        if ($query === null) {
+            $this->logger->error('Sreality: query key "estate" missing', [
+                'url' => $listing->url,
+            ]);
+            throw new \RuntimeException(sprintf('Sreality: query key "estate" missing at %s', $listing->url));
+        }
+
+        $state = is_array($query['state'] ?? null) ? $query['state'] : [];
+        $estate = is_array($state['data'] ?? null) ? $state['data'] : [];
+
+        $text = $this->extractText($estate);
+        $seller = $this->extractSeller($estate);
 
         return $listing->withDetails(
             rawText: $text,
             sellerMeta: $seller['meta'],
             structuredPhones: $seller['phones'],
         );
+    }
+
+    /**
+     * Fetches a page, validates the HTTP status, extracts the embedded
+     * __NEXT_DATA__ JSON, and returns the decoded payload. Returns null only
+     * when $allowNotFound is true and the response is HTTP 404 — that signal
+     * is used by hydrate() to gracefully drop deactivated listings without
+     * polluting the retry queue.
+     *
+     * @return array<mixed, mixed>|null
+     */
+    private function fetchNextData(string $url, bool $allowNotFound = false): ?array
+    {
+        try {
+            $response = $this->httpClient->request('GET', $url, $this->options());
+            $status = $response->getStatusCode();
+        } catch (\Throwable $e) {
+            $this->logger->warning('Sreality: network error', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+            throw new \RuntimeException(sprintf("Sreality: network error '%s' at %s", $e->getMessage(), $url), 0, $e);
+        }
+
+        if ($status === 404 && $allowNotFound) {
+            return null;
+        }
+
+        if ($status === 401 || $status === 403) {
+            $this->logger->error('Sreality: blocked, possibly anti-bot', [
+                'url' => $url,
+                'status' => $status,
+            ]);
+            throw new \RuntimeException(sprintf(
+                'Sreality: HTTP %d at %s — possibly blocked, anti-bot triggered',
+                $status,
+                $url
+            ));
+        }
+
+        if ($status === 429) {
+            $this->logger->warning('Sreality: rate-limited', [
+                'url' => $url,
+            ]);
+            throw new \RuntimeException(sprintf('Sreality: HTTP 429 at %s — rate-limited', $url));
+        }
+
+        if ($status >= 500) {
+            $this->logger->warning('Sreality: server error', [
+                'url' => $url,
+                'status' => $status,
+            ]);
+            throw new \RuntimeException(sprintf('Sreality: HTTP %d at %s — server error', $status, $url));
+        }
+
+        if ($status !== 200) {
+            $this->logger->warning('Sreality: unexpected HTTP status', [
+                'url' => $url,
+                'status' => $status,
+            ]);
+            throw new \RuntimeException(sprintf('Sreality: HTTP %d at %s', $status, $url));
+        }
+
+        try {
+            $body = $response->getContent();
+        } catch (\Throwable $e) {
+            $this->logger->warning('Sreality: body read failed', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+            throw new \RuntimeException(sprintf('Sreality: body read failed at %s', $url), 0, $e);
+        }
+
+        if (preg_match('/<script id="__NEXT_DATA__"[^>]*>(.*?)<\/script>/s', $body, $matches) !== 1) {
+            $this->logger->error('Sreality: __NEXT_DATA__ missing — page structure changed', [
+                'url' => $url,
+            ]);
+            throw new \RuntimeException(sprintf('Sreality: __NEXT_DATA__ missing at %s', $url));
+        }
+
+        try {
+            $decoded = json_decode($matches[1], true, flags: JSON_THROW_ON_ERROR);
+        } catch (\JsonException $e) {
+            $this->logger->error('Sreality: __NEXT_DATA__ malformed JSON', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+            throw new \RuntimeException(sprintf('Sreality: __NEXT_DATA__ malformed JSON at %s', $url), 0, $e);
+        }
+
+        if (! is_array($decoded)) {
+            $this->logger->error('Sreality: __NEXT_DATA__ not an object', [
+                'url' => $url,
+            ]);
+            throw new \RuntimeException(sprintf('Sreality: __NEXT_DATA__ not an object at %s', $url));
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * Locates the first React-Query cache entry whose queryKey starts with
+     * $keyName. Returns null if absent. Both search and detail pages use this:
+     * search → 'estatesSearch', detail → 'estate'.
+     *
+     * @param array<mixed, mixed> $data
+     * @return array<mixed, mixed>|null
+     */
+    private function findQuery(array $data, string $keyName): ?array
+    {
+        $props = is_array($data['props'] ?? null) ? $data['props'] : [];
+        $pageProps = is_array($props['pageProps'] ?? null) ? $props['pageProps'] : [];
+        $dehydrated = is_array($pageProps['dehydratedState'] ?? null) ? $pageProps['dehydratedState'] : [];
+        $queries = $dehydrated['queries'] ?? null;
+        if (! is_array($queries)) {
+            return null;
+        }
+
+        foreach ($queries as $query) {
+            if (! is_array($query)) {
+                continue;
+            }
+            $queryKey = $query['queryKey'] ?? null;
+            if (is_array($queryKey) && ($queryKey[0] ?? null) === $keyName) {
+                return $query;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -209,6 +361,22 @@ final class SrealityClient implements ListingSource
     }
 
     /**
+     * Sleeps so that consecutive search-page calls are spaced at least
+     * SEARCH_THROTTLE_USEC apart. The very first call passes through.
+     */
+    private function throttleSearchPage(): void
+    {
+        if ($this->lastSearchCallAt !== 0) {
+            $elapsed = (int) (hrtime(true) / 1000) - $this->lastSearchCallAt;
+            if ($elapsed < self::SEARCH_THROTTLE_USEC) {
+                usleep(self::SEARCH_THROTTLE_USEC - $elapsed);
+            }
+        }
+
+        $this->lastSearchCallAt = (int) (hrtime(true) / 1000);
+    }
+
+    /**
      * @return list<DealType>
      */
     private function dealTypes(): array
@@ -225,14 +393,27 @@ final class SrealityClient implements ListingSource
     }
 
     /**
-     * @param array<mixed, mixed> $estate
+     * @param array<mixed, mixed> $result one entry from dehydratedState.queries[estatesSearch].state.data.results
      */
-    private function mapShallow(array $estate, DealType $dealType): Listing
+    private function mapShallow(array $result, DealType $dealType): Listing
     {
-        $hashId = is_int($estate['hash_id'] ?? null) ? $estate['hash_id'] : 0;
-        $name = is_string($estate['name'] ?? null) ? $estate['name'] : '';
-        $locality = is_string($estate['locality'] ?? null) ? $estate['locality'] : '';
-        $price = is_int($estate['price'] ?? null) ? $estate['price'] : null;
+        $hashId = is_int($result['id'] ?? null) ? $result['id'] : 0;
+        $name = is_string($result['name'] ?? null) ? $result['name'] : '';
+        $price = is_int($result['priceCzk'] ?? null) ? $result['priceCzk'] : null;
+
+        $loc = is_array($result['locality'] ?? null) ? $result['locality'] : [];
+        $city = is_string($loc['city'] ?? null) ? $loc['city'] : '';
+        $cityPart = is_string($loc['cityPart'] ?? null) ? $loc['cityPart'] : '';
+        $location = $city . ($cityPart !== '' ? ', ' . $cityPart : '');
+
+        // Build a pseudo-seo array shaped like the old API so buildDetailUrl()
+        // (unchanged) can keep its slug logic.
+        $seo = [
+            'category_main_cb' => $this->unwrapCb($result['categoryMainCb'] ?? null),
+            'category_sub_cb' => $this->unwrapCb($result['categorySubCb'] ?? null),
+            'category_type_cb' => $this->unwrapCb($result['categoryTypeCb'] ?? null),
+            'locality' => $this->composeLocalitySlug($loc),
+        ];
 
         return new Listing(
             id: 'sreality:' . $hashId,
@@ -240,8 +421,8 @@ final class SrealityClient implements ListingSource
             title: $name,
             price: $price,
             dealType: $dealType,
-            location: $locality,
-            url: $this->buildDetailUrl($hashId, $dealType, $estate['seo'] ?? null),
+            location: $location,
+            url: $this->buildDetailUrl($hashId, $dealType, $seo),
             rawText: '',
             sellerMeta: null,
             structuredPhones: [],
@@ -249,11 +430,152 @@ final class SrealityClient implements ListingSource
     }
 
     /**
-     * Builds the public detail-page URL from the list endpoint's `seo` block:
+     * `categoryMainCb`, `categorySubCb`, `categoryTypeCb` in the new payload are
+     * objects `{name, value}`. Returns the int `value` or null on any other shape.
+     */
+    private function unwrapCb(mixed $cb): ?int
+    {
+        if (! is_array($cb)) {
+            return null;
+        }
+
+        return is_int($cb['value'] ?? null) ? $cb['value'] : null;
+    }
+
+    /**
+     * Composes the locality slug for the public detail URL from the new
+     * `locality.citySeoName` + `locality.cityPartSeoName`. Sreality 301-redirects
+     * a non-canonical composition to the right page, so even a partial composition
+     * resolves.
+     *
+     * @param array<mixed, mixed> $locality
+     */
+    private function composeLocalitySlug(array $locality): ?string
+    {
+        $city = is_string($locality['citySeoName'] ?? null) ? $locality['citySeoName'] : '';
+        $cityPart = is_string($locality['cityPartSeoName'] ?? null) ? $locality['cityPartSeoName'] : '';
+
+        if ($city !== '' && $cityPart !== '') {
+            return $city . '-' . $cityPart;
+        }
+
+        if ($city !== '') {
+            return $city;
+        }
+
+        return null;
+    }
+
+    /**
+     * Reads the description from a detail-page estate payload.
+     *
+     * @param array<mixed, mixed> $estate
+     */
+    private function extractText(array $estate): string
+    {
+        $description = $estate['description'] ?? null;
+
+        return is_string($description) ? $description : '';
+    }
+
+    /**
+     * Reads contact info for the listing's seller. Sreality's new payload
+     * exposes three independent fields:
+     *
+     *   - `seller`  — populated for broker-listed estates (with a real estate
+     *                 agent profile carrying name, email and phones)
+     *   - `premise` — populated alongside `seller` when the agent belongs to
+     *                 an agency / firm
+     *   - `rus`     — populated for FSBO listings (Realitní Uživatel Service;
+     *                 Sreality's user-account block carrying the private
+     *                 owner's first/last name, email, and — only when logged
+     *                 in — phones). Unrelated to the abbreviation looking
+     *                 like "Russian": it is Sreality's internal name for
+     *                 their account system.
+     *
+     * Auction listings have `seller: null, premise: null, rus: null` — they
+     * collapse to ('meta' => null, 'phones' => []) and are dropped by the
+     * downstream no-contact gate.
+     *
+     * @param array<mixed, mixed> $estate
+     * @return array{meta: ?SellerMeta, phones: list<string>}
+     */
+    private function extractSeller(array $estate): array
+    {
+        $seller = $estate['seller'] ?? null;
+        if (is_array($seller)) {
+            $premise = $estate['premise'] ?? null;
+            $hasPremise = is_array($premise);
+            $name = is_string($seller['name'] ?? null) ? $seller['name'] : null;
+            $email = is_string($seller['email'] ?? null) ? $seller['email'] : null;
+
+            return [
+                'meta' => new SellerMeta($hasPremise, null, $name, $email),
+                'phones' => $this->extractPhones($seller['phones'] ?? null),
+            ];
+        }
+
+        $rus = $estate['rus'] ?? null;
+        if (is_array($rus)) {
+            $first = is_string($rus['name'] ?? null) ? $rus['name'] : '';
+            $last = is_string($rus['surname'] ?? null) ? $rus['surname'] : '';
+            $fullName = trim($first . ' ' . $last);
+            $email = is_string($rus['email'] ?? null) ? $rus['email'] : null;
+            $phones = $this->extractPhones($rus['phones'] ?? null);
+
+            // An empty `rus` block (no name, no email, no phones) carries no
+            // contact information — treat as truly anonymous (auction-like).
+            if ($fullName === '' && ($email === null || $email === '') && $phones === []) {
+                return [
+                    'meta' => null,
+                    'phones' => [],
+                ];
+            }
+
+            return [
+                'meta' => new SellerMeta(false, null, $fullName !== '' ? $fullName : null, $email),
+                'phones' => $phones,
+            ];
+        }
+
+        return [
+            'meta' => null,
+            'phones' => [],
+        ];
+    }
+
+    /**
+     * Filters a `seller.phones[]` array down to a de-duplicated list of Czech
+     * E.164 numbers. Each payload entry is `{phoneType, phone}` with `phone`
+     * already in E.164 form (`+420…`). We validate the shape rather than
+     * re-prefix — naive `'+420' . substr($digits, -9)` would corrupt foreign
+     * numbers (e.g. Slovak `+421…` would silently collide with a Czech one
+     * in ContactRegistry).
+     *
+     * @return list<string>
+     */
+    private function extractPhones(mixed $rawPhones): array
+    {
+        $phones = [];
+        foreach (is_array($rawPhones) ? $rawPhones : [] as $entry) {
+            if (! is_array($entry)) {
+                continue;
+            }
+            $phone = is_string($entry['phone'] ?? null) ? $entry['phone'] : '';
+            if (preg_match('/^\+420[2-9]\d{8}$/', $phone) === 1) {
+                $phones[$phone] = true;
+            }
+        }
+
+        return array_keys($phones);
+    }
+
+    /**
+     * Builds the public detail-page URL from a seo-shaped dict (composed in
+     * mapShallow() to mirror the old API's shape):
      * /detail/{type}/{main}/{sub}/{locality}/{hash_id}. Missing or unrecognised
-     * codes fall back to valid tokens (the deal type for the transaction, `byt`,
-     * `1+kk`, `praha`) — Sreality 301-redirects a non-canonical path to the real
-     * listing, so the only true 404 is a bare /detail/{hash_id}.
+     * codes fall back to valid tokens — Sreality 301-redirects a non-canonical
+     * path to the real listing.
      */
     private function buildDetailUrl(int $hashId, DealType $dealType, mixed $seo): string
     {
@@ -271,9 +593,6 @@ final class SrealityClient implements ListingSource
     }
 
     /**
-     * Reads an integer SEO category code; a missing or non-integer value yields
-     * 0, which no slug map contains, so the caller falls back to a valid token.
-     *
      * @param array<mixed, mixed> $seo
      */
     private function seoCode(array $seo, string $key): int
@@ -284,142 +603,13 @@ final class SrealityClient implements ListingSource
     }
 
     /**
-     * The detail endpoint returns `text` as a {name, value} object. Fall back to
-     * a bare string for resilience against future shape changes.
-     *
-     * @param array<mixed, mixed> $data
-     */
-    private function extractText(array $data): string
-    {
-        $text = $data['text'] ?? null;
-        if (is_array($text)) {
-            return is_string($text['value'] ?? null) ? $text['value'] : '';
-        }
-
-        return is_string($text) ? $text : '';
-    }
-
-    /**
-     * @param array<mixed, mixed> $data
-     * @return array{meta: ?SellerMeta, phones: list<string>}
-     */
-    private function extractSeller(array $data): array
-    {
-        $embedded = is_array($data['_embedded'] ?? null) ? $data['_embedded'] : [];
-        $seller = is_array($embedded['seller'] ?? null) ? $embedded['seller'] : null;
-
-        if ($seller !== null) {
-            return $this->extractBrokerSeller($seller);
-        }
-
-        // Private sellers have no broker profile under _embedded.seller; their
-        // name, e-mail and (only when logged in) phone live in the top-level
-        // `contact` object instead.
-        $contact = is_array($data['contact'] ?? null) ? $data['contact'] : null;
-        if ($contact !== null) {
-            return $this->extractContactSeller($contact);
-        }
-
-        return [
-            'meta' => null,
-            'phones' => [],
-        ];
-    }
-
-    /**
-     * @param array<mixed, mixed> $seller
-     * @return array{meta: SellerMeta, phones: list<string>}
-     */
-    private function extractBrokerSeller(array $seller): array
-    {
-        $sellerEmbedded = is_array($seller['_embedded'] ?? null) ? $seller['_embedded'] : [];
-        $hasPremise = isset($sellerEmbedded['premise']);
-
-        $name = is_string($seller['user_name'] ?? null) ? $seller['user_name'] : null;
-        $email = is_string($seller['email'] ?? null) ? $seller['email'] : null;
-
-        $specialization = is_array($seller['specialization'] ?? null) ? $seller['specialization'] : [];
-        $categories = is_array($specialization['category'] ?? null) ? $specialization['category'] : [];
-        $totalListingCount = null;
-        if ($categories !== []) {
-            $totalListingCount = 0;
-            foreach ($categories as $category) {
-                if (is_array($category) && is_int($category['num'] ?? null)) {
-                    $totalListingCount += $category['num'];
-                }
-            }
-        }
-
-        return [
-            'meta' => new SellerMeta($hasPremise, $totalListingCount, $name, $email),
-            'phones' => $this->extractPhones($seller['phones'] ?? null),
-        ];
-    }
-
-    /**
-     * @param array<mixed, mixed> $contact
-     * @return array{meta: SellerMeta, phones: list<string>}
-     */
-    private function extractContactSeller(array $contact): array
-    {
-        $name = is_string($contact['name'] ?? null) ? $contact['name'] : null;
-        $email = is_string($contact['email'] ?? null) ? $contact['email'] : null;
-
-        // A bare contact carries no premise or listing-count signal — treat it
-        // as a private seller (hasPremise: false, totalListingCount: null).
-        return [
-            'meta' => new SellerMeta(false, null, $name, $email),
-            'phones' => $this->extractPhones($contact['phones'] ?? null),
-        ];
-    }
-
-    /**
-     * Canonicalises a Sreality phones array (list of {code, type, number}) to a
-     * de-duplicated list of E.164 numbers.
-     *
-     * @return list<string>
-     */
-    private function extractPhones(mixed $rawPhones): array
-    {
-        $phones = [];
-        foreach (is_array($rawPhones) ? $rawPhones : [] as $phone) {
-            if (! is_array($phone)) {
-                continue;
-            }
-            $number = is_string($phone['number'] ?? null) ? $phone['number'] : '';
-            $e164 = $this->toE164($number);
-            if ($e164 !== null) {
-                $phones[$e164] = true;
-            }
-        }
-
-        return array_keys($phones);
-    }
-
-    /**
-     * Canonicalises a Czech phone number to "+420" + 9 digits, matching the format
-     * PhoneDetector produces, so ContactRegistry keys stay consistent across sources.
-     */
-    private function toE164(string $number): ?string
-    {
-        $digits = preg_replace('/\D/', '', $number) ?? '';
-        if (strlen($digits) < 9) {
-            return null;
-        }
-
-        // The Czech national number is always the last 9 digits (any 420 / 00420
-        // country-code prefix sits in front of it).
-        return '+420' . substr($digits, -9);
-    }
-
-    /**
      * @return array{headers: array<string, string>}
      */
     private function options(): array
     {
         return [
             'headers' => [
-                'Accept' => 'application/json',
+                'Accept' => 'text/html,application/xhtml+xml',
                 'User-Agent' => self::USER_AGENT,
             ],
         ];
